@@ -25,13 +25,14 @@ except ImportError:
     from openpyxl.utils import get_column_letter
 
 # Game subreddits to monitor
+# Game subreddits to monitor (with fallbacks)
 SUBREDDITS = {
-    "Palworld": "Palworld",
-    "CS2": "GlobalOffensive",
-    "Valorant": "Valorant",
-    "LOL": "leagueoflegends",
-    "DeltaForce": "DeltaForce",
-    "TFT": "TeamfightTactics",
+    "Palworld": ["Palworld", "palworld"],
+    "CS2": ["GlobalOffensive", "csgo", "CS2"],
+    "Valorant": ["Valorant", "VALORANT"],
+    "LOL": ["leagueoflegends", "LeagueOfLegends"],
+    "DeltaForce": ["DeltaForce", "deltaforce", "DeltaForceGame"],
+    "TFT": ["TeamfightTactics", "teamfighttactics"],
 }
 
 # How many hot posts to fetch per subreddit
@@ -45,49 +46,66 @@ ctx.check_hostname = False
 ctx.verify_mode = ssl.CERT_NONE
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; RedditMonitor/1.0; +https://github.com/reddit-monitor)"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
 }
 
 
-def fetch_json(url, retries=3, delay=2):
+def fetch_json(url, retries=3, delay=3):
     """Fetch JSON from URL with retries."""
     for attempt in range(retries):
         try:
             req = urllib.request.Request(url, headers=HEADERS)
             with urllib.request.urlopen(req, context=ctx, timeout=30) as resp:
-                return json.loads(resp.read().decode("utf-8"))
+                raw = resp.read().decode("utf-8")
+                return json.loads(raw)
+        except urllib.error.HTTPError as e:
+            print(f"  HTTP {e.code}: {e.reason} (attempt {attempt+1}/{retries})", file=sys.stderr)
+            if e.code == 429:
+                time.sleep(delay * (attempt + 1) * 2)
+            elif attempt < retries - 1:
+                time.sleep(delay * (attempt + 1))
         except Exception as e:
-            print(f"  Attempt {attempt+1}/{retries} failed: {e}", file=sys.stderr)
+            print(f"  Error: {e} (attempt {attempt+1}/{retries})", file=sys.stderr)
             if attempt < retries - 1:
                 time.sleep(delay * (attempt + 1))
     return None
 
 
-def get_hot_posts(subreddit, limit=POSTS_PER_SUB):
-    """Get hot posts from a subreddit."""
-    url = f"https://www.reddit.com/r/{subreddit}/hot.json?limit={limit}"
-    print(f"Fetching: {url}")
-    data = fetch_json(url)
-    if not data or "data" not in data or "children" not in data["data"]:
-        print(f"  Failed to fetch posts from r/{subreddit}")
-        return []
-
-    posts = []
-    for child in data["data"]["children"]:
-        d = child["data"]
-        posts.append({
-            "title": d.get("title", ""),
-            "author": d.get("author", ""),
-            "score": d.get("score", 0),
-            "num_comments": d.get("num_comments", 0),
-            "url": f"https://www.reddit.com{d.get('permalink', '')}",
-            "created_utc": d.get("created_utc", 0),
-            "selftext": d.get("selftext", "")[:500],
-            "link_flair_text": d.get("link_flair_text", ""),
-            "upvote_ratio": d.get("upvote_ratio", 0),
-            "subreddit": d.get("subreddit", subreddit),
-        })
-    return posts
+def get_hot_posts(subreddit_names, limit=POSTS_PER_SUB):
+    """Get hot posts from a subreddit, trying fallback names."""
+    if isinstance(subreddit_names, str):
+        subreddit_names = [subreddit_names]
+    
+    for subreddit in subreddit_names:
+        url = f"https://www.reddit.com/r/{subreddit}/hot.json?limit={limit}"
+        print(f"Fetching: {url}")
+        data = fetch_json(url)
+        if data and "data" in data and "children" in data["data"]:
+            posts = []
+            for child in data["data"]["children"]:
+                d = child["data"]
+                posts.append({
+                    "title": d.get("title", ""),
+                    "author": d.get("author", ""),
+                    "score": d.get("score", 0),
+                    "num_comments": d.get("num_comments", 0),
+                    "url": f"https://www.reddit.com{d.get('permalink', '')}",
+                    "created_utc": d.get("created_utc", 0),
+                    "selftext": d.get("selftext", "")[:500],
+                    "link_flair_text": d.get("link_flair_text", ""),
+                    "upvote_ratio": d.get("upvote_ratio", 0),
+                    "subreddit": d.get("subreddit", subreddit),
+                })
+            if posts:
+                return posts, subreddit
+            print(f"  r/{subreddit} returned 0 posts, trying next fallback...")
+        else:
+            print(f"  r/{subreddit} failed, trying next fallback...")
+        time.sleep(1)
+    
+    return [], subreddit_names[0] if subreddit_names else "unknown"
 
 
 def get_top_comments(permalink, limit=COMMENTS_PER_POST):
@@ -210,7 +228,7 @@ def create_excel_report(all_data, output_dir="."):
 
     for game, data in all_data.items():
         posts = data.get("posts", [])
-        ws_summary[f"A{row}"] = f"【{game}】r/{SUBREDDITS.get(game, game)}"
+        ws_summary[f"A{row}"] = f"【{game}】r/{data.get('subreddit', game)}"
         ws_summary[f"A{row}"].font = Font(bold=True)
         row += 1
         for p in posts[:5]:
@@ -230,7 +248,7 @@ def create_excel_report(all_data, output_dir="."):
         ws = wb.create_sheet(title=game[:31])
 
         # Title
-        sub_name = SUBREDDITS.get(game, game)
+        sub_name = data.get("subreddit", game)
         ws["A1"] = f"{now.strftime('%m月%d日 %H:%M')} r/{sub_name} 数据"
         ws["A1"].font = title_font
         ws.merge_cells("A1:J1")
@@ -300,9 +318,9 @@ def main():
 
     all_data = {}
 
-    for game, subreddit in SUBREDDITS.items():
-        print(f"\n--- Fetching r/{subreddit} ({game}) ---")
-        posts = get_hot_posts(subreddit, POSTS_PER_SUB)
+    for game, subreddit_names in SUBREDDITS.items():
+        print(f"\n--- Fetching {game} (subreddits: {subreddit_names}) ---")
+        posts, actual_sub = get_hot_posts(subreddit_names, POSTS_PER_SUB)
 
         # Get top comments for each post
         for i, post in enumerate(posts):
@@ -310,18 +328,20 @@ def main():
             permalink = post["url"].replace("https://www.reddit.com", "")
             comments = get_top_comments(permalink, COMMENTS_PER_POST)
             post["comments"] = comments
-            time.sleep(0.5)  # Rate limit
+            time.sleep(1)  # Rate limit
 
         all_data[game] = {
-            "subreddit": subreddit,
+            "subreddit": actual_sub,
             "posts": posts,
             "summary": summarize_discussion(posts),
         }
 
-        print(f"  Got {len(posts)} posts")
+        print(f"  Got {len(posts)} posts from r/{actual_sub}")
+        time.sleep(2)  # Pause between subreddits
 
     # Generate Excel
     output_dir = os.environ.get("OUTPUT_DIR", ".")
+    os.makedirs(output_dir, exist_ok=True)
     filepath = create_excel_report(all_data, output_dir)
 
     # Also save raw JSON

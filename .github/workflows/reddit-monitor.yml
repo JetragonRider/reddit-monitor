@@ -23,7 +23,9 @@ jobs:
         run: pip install openpyxl
 
       - name: Run Reddit Monitor
-        run: python reddit_monitor.py
+        run: |
+          mkdir -p reports
+          python reddit_monitor.py
         env:
           OUTPUT_DIR: reports
 
