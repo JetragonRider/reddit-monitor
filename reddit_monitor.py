@@ -15,6 +15,11 @@ import urllib.error
 import ssl
 import xml.etree.ElementTree as ET
 import re
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
 
 # For Excel generation
 try:
@@ -298,7 +303,7 @@ def summarize_discussion(posts_with_comments):
     return "\n".join(lines)
 
 
-def create_excel_report(all_data, output_dir="."):
+def create_excel_report(all_data, output_dir=".", period_label=""):
     """Create Excel report matching the template format."""
     now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8)))
     date_str = now.strftime("%Y%m%d")
@@ -323,7 +328,7 @@ def create_excel_report(all_data, output_dir="."):
     ws_summary = wb.active
     ws_summary.title = "汇总日报"
 
-    ws_summary["A1"] = f"Reddit社区巡查日报 {now.strftime('%Y年%m月%d日 %H:%M')}"
+    ws_summary["A1"] = f"Reddit社区巡查日报 {now.strftime('%Y年%m月%d日 %H:%M')} ({period_label})"
     ws_summary["A1"].font = title_font
     ws_summary.merge_cells("A1:G1")
 
@@ -443,10 +448,120 @@ def create_excel_report(all_data, output_dir="."):
     return filepath
 
 
+def get_time_period():
+    """Get the monitoring time period based on REPORT_TIME env var."""
+    report_time = os.environ.get("REPORT_TIME", "now")
+    now_bjt = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8)))
+    
+    today = now_bjt.replace(hour=0, minute=0, second=0, microsecond=0)
+    
+    if report_time == "09:00":
+        # Report from yesterday 18:00 to today 09:00
+        start = today - datetime.timedelta(days=1) + datetime.timedelta(hours=18)
+        end = today + datetime.timedelta(hours=9)
+        period_label = "前日18:00 - 当日09:00"
+    elif report_time == "14:00":
+        # Report from today 09:00 to 14:00
+        start = today + datetime.timedelta(hours=9)
+        end = today + datetime.timedelta(hours=14)
+        period_label = "当日09:00 - 14:00"
+    elif report_time == "18:00":
+        # Report from today 14:00 to 18:00
+        start = today + datetime.timedelta(hours=14)
+        end = today + datetime.timedelta(hours=18)
+        period_label = "当日14:00 - 18:00"
+    else:
+        # Default: last 5 hours
+        start = now_bjt - datetime.timedelta(hours=5)
+        end = now_bjt
+        period_label = f"最近5小时 ({start.strftime('%H:%M')}-{end.strftime('%H:%M')})"
+    
+    return start, end, period_label
+
+
+def filter_posts_by_time(posts, start_time, end_time):
+    """Filter posts by created_utc within the time range."""
+    start_ts = start_time.timestamp()
+    end_ts = end_time.timestamp()
+    
+    filtered = []
+    for p in posts:
+        ts = p.get("created_utc", 0)
+        if ts == 0:
+            # If no timestamp, keep it (might be from RSS without time)
+            filtered.append(p)
+        elif start_ts <= ts <= end_ts:
+            filtered.append(p)
+    
+    return filtered
+
+
+def send_email(filepath, period_label, now_bjt, all_data):
+    """Send the Excel report via email."""
+    smtp_server = os.environ.get("SMTP_SERVER", "smtp.qq.com")
+    smtp_port = int(os.environ.get("SMTP_PORT", "465"))
+    email_addr = os.environ.get("EMAIL_ADDR", "851372967@qq.com")
+    email_pass = os.environ.get("EMAIL_PASS", "")
+    to_addr = os.environ.get("TO_ADDR", "851372967@qq.com")
+
+    if not email_pass:
+        print("EMAIL_PASS not set, skipping email")
+        return False
+
+    msg = MIMEMultipart()
+    msg["From"] = email_addr
+    msg["To"] = to_addr
+    msg["Subject"] = f"Reddit社区巡查报告 {now_bjt.strftime('%Y-%m-%d %H:%M')} ({period_label})"
+
+    # Build summary text
+    total_posts = sum(len(d.get("posts", [])) for d in all_data.values())
+    body_lines = [
+        f"Reddit 社区巡查报告",
+        f"时间: {now_bjt.strftime('%Y-%m-%d %H:%M')} BJT",
+        f"时间段: {period_label}",
+        f"总帖子数: {total_posts}",
+        "",
+        "各社区概况:",
+    ]
+    for game, data in all_data.items():
+        posts = data.get("posts", [])
+        body_lines.append(f"\n【{game}】r/{data.get('subreddit', game)} - {len(posts)}帖")
+        for p in posts[:3]:
+            body_lines.append(f"  - {p['title'][:60]}")
+
+    body = "\n".join(body_lines)
+    msg.attach(MIMEText(body, "plain", "utf-8"))
+
+    # Attach Excel file
+    with open(filepath, "rb") as f:
+        part = MIMEBase("application", "vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        part.set_payload(f.read())
+        encoders.encode_base64(part)
+        part.add_header("Content-Disposition", f'attachment; filename="{os.path.basename(filepath)}"')
+        msg.attach(part)
+
+    try:
+        print(f"Sending email to {to_addr}...")
+        server = smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=30)
+        server.login(email_addr, email_pass)
+        server.sendmail(email_addr, to_addr, msg.as_string())
+        server.close()
+        print("Email sent successfully!")
+        return True
+    except Exception as e:
+        print(f"Email failed: {e}", file=sys.stderr)
+        return False
+
+
 def main():
     print(f"=== Reddit Community Monitor ===")
     now_bjt = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8)))
     print(f"Time: {now_bjt.strftime('%Y-%m-%d %H:%M:%S')} BJT")
+
+    start_time, end_time, period_label = get_time_period()
+    print(f"Report period: {period_label}")
+    print(f"  From: {start_time.strftime('%Y-%m-%d %H:%M')}")
+    print(f"  To:   {end_time.strftime('%Y-%m-%d %H:%M')}")
     print()
 
     all_data = {}
@@ -466,25 +581,32 @@ def main():
             else:
                 post["comments"] = []
 
+        # Filter posts by time period
+        filtered_posts = filter_posts_by_time(posts, start_time, end_time)
+        print(f"  Total: {len(posts)} posts, filtered to time period: {len(filtered_posts)} posts")
+
         all_data[game] = {
             "subreddit": actual_sub,
-            "posts": posts,
-            "summary": summarize_discussion(posts),
+            "posts": filtered_posts,
+            "summary": summarize_discussion(filtered_posts),
         }
 
-        print(f"  Got {len(posts)} posts from r/{actual_sub}")
+        print(f"  Got {len(filtered_posts)} posts from r/{actual_sub}")
         time.sleep(2)
 
     # Generate Excel
     output_dir = os.environ.get("OUTPUT_DIR", ".")
     os.makedirs(output_dir, exist_ok=True)
-    filepath = create_excel_report(all_data, output_dir)
+    filepath = create_excel_report(all_data, output_dir, period_label)
 
     # Also save raw JSON
     json_path = os.path.join(output_dir, f"reddit_raw_{now_bjt.strftime('%Y%m%d_%H%M')}.json")
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(all_data, f, ensure_ascii=False, indent=2)
     print(f"Raw data saved: {json_path}")
+
+    # Send email
+    send_email(filepath, period_label, now_bjt, all_data)
 
     print("\n=== Done ===")
 
