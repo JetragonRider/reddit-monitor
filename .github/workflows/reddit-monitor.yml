@@ -50,6 +50,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git pull --rebase origin main || true
           git add -f reports/
           git commit -m "Reddit monitor report $(date -u -d '+8 hours' '+%Y-%m-%d %H:%M') BJT ($REPORT_TIME)" || echo "No changes"
-          git push
+          git push || echo "Push failed, reports already saved as artifacts"
