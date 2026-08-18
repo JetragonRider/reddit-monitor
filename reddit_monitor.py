@@ -40,7 +40,79 @@ SUBREDDITS = {
     "TFT": ["TeamfightTactics"],
 }
 
-POSTS_PER_SUB = 20
+# ============================================================
+# 爬取需求分类规则（根据用户工作流程图）
+# ============================================================
+# A类: 工具引流机会帖 - 可以回复并引导用户使用工具
+# B类: 用户痛点帖 - 需求收集
+TOOL_OPPORTUNITY_KEYWORDS = {
+    "DeltaForce": {
+        "label": "武器改装/Build相关 → DF工具能解决",
+        "keywords": ["weapon build", "gun build", "loadout", "attachment", "build", "改装", "config",
+                     "best build", "weapon setup", "gun setup", "ar build", "sniper build", "smg build",
+                     "meta build", "optimal build", "weapon combo", "barrel", "stock", "grip", "scope",
+                     "muzzle", "foregrip", "laser", "ammo type", "fire rate", "recoil control"],
+    },
+    "Valorant": {
+        "label": "皮肤数据/角色信息 → Val工具能解决",
+        "keywords": ["skin", "skins", "cosmetic", "bundle", "weapon skin", "agent info", "agent data",
+                     "character info", "skin price", "skin data", "collection", "battle pass",
+                     "agent ability", "agent stats", "agent guide", "星辉", "皮肤", "角色数据",
+                     "valuant skin", "skin list", "cosmetics list", "agent list", "contract"],
+    },
+    "Palworld": {
+        "label": "配种组合/繁殖 → Palworld工具能解决",
+        "keywords": ["breeding", "breed", "breed combo", "pairing", "pal combination", "breeding chain",
+                     "breeding recipe", "breed guide", "how to breed", "breed result", "offspring",
+                     "配种", "繁殖", "breeding calculator", "breeding tree", "pal breeding",
+                     "child pal", "parent pal", "inherit", "passive skill", "iv", "stats",
+                     "alpha", "lucky", "fusion", "perfect pal", "soul"],
+    },
+    "LOL": {
+        "label": "ARAM攻略/阵容 → LOL工具能解决",
+        "keywords": ["aram", "aram guide", "aram comp", "aram build", "aram tier", "aram strategy",
+                     "aram best", "aram champion", "all random", "aram tier list", "aram pick",
+                     "aram counter", "aram comp guide", "aram win", "random build", "ARAM",
+                     "aram meta", "aram op", "aram guide"],
+    },
+    "TFT": {
+        "label": "TFT阵容/Tier List → TFT工具能解决",
+        "keywords": ["tier list", "tier", "comp", "composition", "best comp", "meta comp",
+                     "team comp", "build guide", "tier", "S tier", "A tier", "tier list",
+                     "meta", "patch notes", "best build", "op comp", "meta build",
+                     "comp guide", "re Roll", "fast", "positioning", "augment tier",
+                     "teamfight tactics", "set", "comp tier", "tier comp"],
+    },
+    "CS2": {
+        "label": "CS2数据/统计 → CS2工具能解决",
+        "keywords": ["stats", "statistics", "data", "kd", "k/d", "winrate", "win rate",
+                     "match data", "player stats", "weapon stats", "skin price", "skin value",
+                     "inventory value", "float", "wear", "pattern", "skin data",
+                     "market price", "stat track", "competitive stats", "premier stats",
+                     "rank distribution", "elo", "rating", "faceit level"],
+    },
+}
+
+# B类: 用户痛点关键词
+PAIN_POINT_KEYWORDS = {
+    "all": {
+        "complaint": ["broken", "bug", "bugged", "glitch", "crash", "lag", "unplayable",
+                      "worst", "terrible", "awful", "frustrating", "annoying", "hate",
+                      "fix this", "please fix", "needs to fix", "so bad", "ruined",
+                      "disappointed", "unfair", "rip off", "scam", "pay to win", "p2w"],
+        "feature_request": ["wish there was", "need a tool", "is there a way", "is there a tool",
+                            "can someone help", "how do i", "is it possible", "feature request",
+                            "would be nice if", "i wish", "why is there no", "missing feature",
+                            "why can't i", "why doesn't", "any way to", "is there any"],
+        "data_error": ["wrong data", "incorrect", "inaccurate", "outdated", "not updating",
+                       "data error", "stale data", "broken data", "missing data"],
+        "unmet_need": ["no solution", "nobody knows", "can't find", "no guide",
+                       "no tool for", "nothing helps", "still stuck", "giving up",
+                       "no one answered", "unresolved", "still looking"],
+    }
+}
+
+POSTS_PER_SUB = 25
 COMMENTS_PER_POST = 10
 
 ctx = ssl.create_default_context()
@@ -87,13 +159,70 @@ def fetch_json(url, retries=3, delay=5):
     return None
 
 
-def fetch_rss(subreddit, limit=POSTS_PER_SUB):
+def classify_post(post, game):
+    """Classify a post as A (tool opportunity) or B (pain point) and add notes."""
+    title = post.get("title", "").lower()
+    selftext = post.get("selftext", "").lower()
+    combined = f"{title} {selftext}"
+    
+    tags = []
+    notes = []
+    
+    # A类: 工具引流机会
+    tool_config = TOOL_OPPORTUNITY_KEYWORDS.get(game, {})
+    tool_label = tool_config.get("label", "")
+    tool_keywords = tool_config.get("keywords", [])
+    
+    matched_tool_keywords = [kw for kw in tool_keywords if kw in combined]
+    if matched_tool_keywords:
+        tags.append("A-工具引流机会")
+        notes.append(f"[{tool_label}] 匹配关键词: {', '.join(matched_tool_keywords[:5])}")
+    
+    # B类: 用户痛点
+    pain_config = PAIN_POINT_KEYWORDS["all"]
+    
+    # B1: 抱怨功能不好用
+    matched_complaints = [kw for kw in pain_config["complaint"] if kw in combined]
+    if matched_complaints:
+        tags.append("B-抱怨功能")
+        notes.append(f"用户抱怨: {', '.join(matched_complaints[:5])}")
+    
+    # B2: 询问功能是否存在/需求
+    matched_requests = [kw for kw in pain_config["feature_request"] if kw in combined]
+    if matched_requests:
+        tags.append("B-功能需求")
+        notes.append(f"用户需求: {', '.join(matched_requests[:5])}")
+    
+    # B3: 数据错误反馈
+    matched_data_errors = [kw for kw in pain_config["data_error"] if kw in combined]
+    if matched_data_errors:
+        tags.append("B-数据错误")
+        notes.append(f"数据问题: {', '.join(matched_data_errors[:5])}")
+    
+    # B4: 无人解决的痛点
+    matched_unmet = [kw for kw in pain_config["unmet_need"] if kw in combined]
+    if matched_unmet:
+        tags.append("B-无人解决")
+        notes.append(f"痛点: {', '.join(matched_unmet[:5])}")
+    
+    if not tags:
+        tags.append("其他")
+    
+    post["classification"] = " | ".join(tags)
+    post["classification_notes"] = "\n".join(notes) if notes else "无特殊标记"
+    post["is_tool_opportunity"] = any(t.startswith("A") for t in tags)
+    post["is_pain_point"] = any(t.startswith("B") for t in tags)
+    
+    return post
+
+
+def fetch_rss(subreddit, sort="hot", limit=POSTS_PER_SUB):
     """Fetch posts from Reddit RSS feed (less likely to be blocked)."""
-    url = f"https://www.reddit.com/r/{subreddit}/hot/.rss?limit={limit}"
+    url = f"https://www.reddit.com/r/{subreddit}/{sort}/.rss?limit={limit}"
     print(f"Fetching RSS: {url}")
     status, content = fetch_url(url, retries=3, delay=5)
     if not content:
-        print(f"  RSS fetch failed for r/{subreddit}")
+        print(f"  RSS fetch failed for r/{subreddit} ({sort})")
         return []
 
     try:
@@ -196,56 +325,77 @@ def fetch_rss(subreddit, limit=POSTS_PER_SUB):
     return posts
 
 
-def get_hot_posts(subreddit_names, limit=POSTS_PER_SUB):
-    """Get hot posts from a subreddit using RSS first, then JSON API."""
+def get_hot_posts(subreddit_names, limit=POSTS_PER_SUB, game=None):
+    """Get hot + new posts from a subreddit using RSS first, then JSON API."""
     if isinstance(subreddit_names, str):
         subreddit_names = [subreddit_names]
 
     for subreddit in subreddit_names:
-        # Try RSS first (less likely to be blocked)
-        posts = fetch_rss(subreddit, limit)
-        if posts:
-            # Enrich with JSON API for scores/comments (best effort)
-            print(f"  Enriching with JSON API data...")
-            json_url = f"https://www.reddit.com/r/{subreddit}/hot.json?limit={limit}"
-            json_data = fetch_json(json_url, retries=2, delay=3)
-            if json_data and "data" in json_data and "children" in json_data["data"]:
-                for i, child in enumerate(json_data["data"]["children"][:len(posts)]):
-                    d = child["data"]
-                    if i < len(posts):
-                        posts[i]["score"] = d.get("score", posts[i]["score"])
-                        posts[i]["num_comments"] = d.get("num_comments", posts[i]["num_comments"])
-                        posts[i]["upvote_ratio"] = d.get("upvote_ratio", 0)
-                        posts[i]["link_flair_text"] = d.get("link_flair_text", posts[i]["link_flair_text"])
-                        # Get permalink for comments
-                        posts[i]["url"] = f"https://www.reddit.com{d.get('permalink', '')}"
-                time.sleep(1)
-            return posts, subreddit
-        
-        # Fallback: try JSON API directly
-        print(f"  RSS failed for r/{subreddit}, trying JSON API...")
-        json_url = f"https://www.reddit.com/r/{subreddit}/hot.json?limit={limit}"
-        print(f"Fetching JSON: {json_url}")
-        data = fetch_json(json_url, retries=3, delay=5)
-        if data and "data" in data and "children" in data["data"]:
-            posts = []
-            for child in data["data"]["children"]:
-                d = child["data"]
-                posts.append({
-                    "title": d.get("title", ""),
-                    "author": d.get("author", ""),
-                    "score": d.get("score", 0),
-                    "num_comments": d.get("num_comments", 0),
-                    "url": f"https://www.reddit.com{d.get('permalink', '')}",
-                    "created_utc": d.get("created_utc", 0),
-                    "selftext": d.get("selftext", "")[:500],
-                    "link_flair_text": d.get("link_flair_text", ""),
-                    "upvote_ratio": d.get("upvote_ratio", 0),
-                    "subreddit": d.get("subreddit", subreddit),
-                })
+        all_posts = []
+        seen_urls = set()
+
+        # Fetch both "hot" and "new" sorting
+        for sort in ["hot", "new"]:
+            # Try RSS first (less likely to be blocked)
+            posts = fetch_rss(subreddit, sort=sort, limit=limit)
             if posts:
-                return posts, subreddit
-        
+                # Enrich with JSON API for scores/comments (best effort)
+                print(f"  Enriching {sort} with JSON API data...")
+                json_url = f"https://www.reddit.com/r/{subreddit}/{sort}.json?limit={limit}"
+                json_data = fetch_json(json_url, retries=2, delay=3)
+                if json_data and "data" in json_data and "children" in json_data["data"]:
+                    for i, child in enumerate(json_data["data"]["children"][:len(posts)]):
+                        d = child["data"]
+                        if i < len(posts):
+                            posts[i]["score"] = d.get("score", posts[i]["score"])
+                            posts[i]["num_comments"] = d.get("num_comments", posts[i]["num_comments"])
+                            posts[i]["upvote_ratio"] = d.get("upvote_ratio", 0)
+                            posts[i]["link_flair_text"] = d.get("link_flair_text", posts[i]["link_flair_text"])
+                            posts[i]["url"] = f"https://www.reddit.com{d.get('permalink', '')}"
+                    time.sleep(1)
+
+                # Add sort tag and deduplicate
+                for p in posts:
+                    p["sort_type"] = sort
+                    url = p.get("url", "")
+                    if url not in seen_urls:
+                        all_posts.append(p)
+                        seen_urls.add(url)
+
+            else:
+                # Fallback: try JSON API directly
+                print(f"  RSS failed for r/{subreddit} ({sort}), trying JSON API...")
+                json_url = f"https://www.reddit.com/r/{subreddit}/{sort}.json?limit={limit}"
+                print(f"Fetching JSON: {json_url}")
+                json_data = fetch_json(json_url, retries=3, delay=5)
+                if json_data and "data" in json_data and "children" in json_data["data"]:
+                    for child in json_data["data"]["children"]:
+                        d = child["data"]
+                        post_url = f"https://www.reddit.com{d.get('permalink', '')}"
+                        if post_url not in seen_urls:
+                            all_posts.append({
+                                "title": d.get("title", ""),
+                                "author": d.get("author", ""),
+                                "score": d.get("score", 0),
+                                "num_comments": d.get("num_comments", 0),
+                                "url": post_url,
+                                "created_utc": d.get("created_utc", 0),
+                                "selftext": d.get("selftext", "")[:500],
+                                "link_flair_text": d.get("link_flair_text", ""),
+                                "upvote_ratio": d.get("upvote_ratio", 0),
+                                "subreddit": d.get("subreddit", subreddit),
+                                "sort_type": sort,
+                            })
+                            seen_urls.add(post_url)
+                time.sleep(2)
+
+        if all_posts:
+            # Classify each post
+            if game:
+                for p in all_posts:
+                    classify_post(p, game)
+            return all_posts, subreddit
+
         print(f"  r/{subreddit} completely failed, trying next fallback...")
         time.sleep(3)
 
@@ -338,19 +488,28 @@ def create_excel_report(all_data, output_dir=".", period_label=""):
     ws_summary["A4"] = "社区"
     ws_summary["B4"] = "巡查帖子数"
     ws_summary["C4"] = "总评论数"
-    ws_summary["D4"] = "主要讨论话题"
-    for col in ["A4", "B4", "C4", "D4"]:
+    ws_summary["D4"] = "工具引流机会"
+    ws_summary["E4"] = "用户痛点帖"
+    ws_summary["F4"] = "主要讨论话题"
+    for col in ["A4", "B4", "C4", "D4", "E4", "F4"]:
         ws_summary[col].font = header_font
         ws_summary[col].fill = header_fill
 
     row = 5
     total_posts = 0
     total_comments = 0
+    total_tool_opp = 0
+    total_pain = 0
     for game, data in all_data.items():
         posts = data.get("posts", [])
         total_comments_count = sum(p.get("num_comments", 0) for p in posts)
         total_posts += len(posts)
         total_comments += total_comments_count
+
+        tool_opp_count = sum(1 for p in posts if p.get("is_tool_opportunity"))
+        pain_count = sum(1 for p in posts if p.get("is_pain_point"))
+        total_tool_opp += tool_opp_count
+        total_pain += pain_count
 
         top_titles = [p["title"] for p in posts[:5]]
         summary = " | ".join(top_titles[:3])
@@ -358,17 +517,43 @@ def create_excel_report(all_data, output_dir=".", period_label=""):
         ws_summary[f"A{row}"] = game
         ws_summary[f"B{row}"] = len(posts)
         ws_summary[f"C{row}"] = total_comments_count
-        ws_summary[f"D{row}"] = summary
-        ws_summary[f"D{row}"].alignment = wrap_align
+        ws_summary[f"D{row}"] = tool_opp_count
+        ws_summary[f"E{row}"] = pain_count
+        ws_summary[f"F{row}"] = summary
+        ws_summary[f"F{row}"].alignment = wrap_align
         row += 1
 
     ws_summary[f"A{row}"] = "合计"
     ws_summary[f"B{row}"] = total_posts
     ws_summary[f"C{row}"] = total_comments
+    ws_summary[f"D{row}"] = total_tool_opp
+    ws_summary[f"E{row}"] = total_pain
     ws_summary[f"A{row}"].font = Font(bold=True)
     row += 2
 
-    ws_summary[f"A{row}"] = "二、各社区讨论热点"
+    ws_summary[f"A{row}"] = "二、分类说明"
+    ws_summary[f"A{row}"].font = section_font
+    row += 1
+    legend = [
+        ("A-工具引流机会", "帖子内容与我们的工具相关，可回复引导用户使用工具"),
+        ("B-抱怨功能", "用户在抱怨某功能不好用，收集作为改进参考"),
+        ("B-功能需求", "用户在询问某功能是否存在，收集作为新功能需求"),
+        ("B-数据错误", "用户反馈数据错误，需检查工具数据准确性"),
+        ("B-无人解决", "用户讨论某痛点但无人解决，可介入提供方案"),
+    ]
+    for tag, desc in legend:
+        ws_summary[f"A{row}"] = tag
+        ws_summary[f"B{row}"] = desc
+        ws_summary.merge_cells(f"B{row}:F{row}")
+        ws_summary[f"B{row}"].alignment = wrap_align
+        if tag.startswith("A"):
+            ws_summary[f"A{row}"].fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+        else:
+            ws_summary[f"A{row}"].fill = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
+        row += 1
+    row += 1
+
+    ws_summary[f"A{row}"] = "三、各社区讨论热点"
     ws_summary[f"A{row}"].font = section_font
     row += 1
 
@@ -386,7 +571,9 @@ def create_excel_report(all_data, output_dir=".", period_label=""):
     ws_summary.column_dimensions["A"].width = 40
     ws_summary.column_dimensions["B"].width = 15
     ws_summary.column_dimensions["C"].width = 15
-    ws_summary.column_dimensions["D"].width = 60
+    ws_summary.column_dimensions["D"].width = 15
+    ws_summary.column_dimensions["E"].width = 15
+    ws_summary.column_dimensions["F"].width = 60
 
     # === Sheet per game ===
     for game, data in all_data.items():
@@ -401,7 +588,8 @@ def create_excel_report(all_data, output_dir=".", period_label=""):
 
         headers = [
             "序号", "帖子标题", "Flair", "作者", "点赞数",
-            "评论数", "Upvote Ratio", "帖子链接", "评论摘要(Top5)", "讨论内容总结"
+            "评论数", "Upvote Ratio", "帖子链接", "排序类型",
+            "分类标记", "分类备注/引流建议", "评论摘要(Top5)", "讨论内容总结"
         ]
         header_row = 5
         for col_idx, h in enumerate(headers, 1):
@@ -428,15 +616,27 @@ def create_excel_report(all_data, output_dir=".", period_label=""):
             ws.cell(row=r, column=6, value=post["num_comments"])
             ws.cell(row=r, column=7, value=post.get("upvote_ratio", 0))
             ws.cell(row=r, column=8, value=post["url"])
-            ws.cell(row=r, column=9, value=comment_summary).alignment = wrap_align
-            ws.cell(row=r, column=10, value=post.get("selftext", "")[:200]).alignment = wrap_align
+            ws.cell(row=r, column=9, value=post.get("sort_type", "hot")).alignment = wrap_align
+            ws.cell(row=r, column=10, value=post.get("classification", "其他")).alignment = wrap_align
 
-            for col in range(1, 11):
+            # Classification notes with color coding
+            notes_cell = ws.cell(row=r, column=11, value=post.get("classification_notes", "无特殊标记"))
+            notes_cell.alignment = wrap_align
+            if post.get("is_tool_opportunity"):
+                notes_cell.fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")  # Green
+            elif post.get("is_pain_point"):
+                notes_cell.fill = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")  # Yellow
+
+            ws.cell(row=r, column=12, value=comment_summary).alignment = wrap_align
+            ws.cell(row=r, column=13, value=post.get("selftext", "")[:200]).alignment = wrap_align
+
+            for col in range(1, 14):
                 ws.cell(row=r, column=col).border = thin_border
 
         col_widths = {
             "A": 6, "B": 50, "C": 15, "D": 15, "E": 10,
-            "F": 10, "G": 12, "H": 40, "I": 60, "J": 40
+            "F": 10, "G": 12, "H": 40, "I": 10, "J": 18,
+            "K": 45, "L": 60, "M": 40
         }
         for col, width in col_widths.items():
             ws.column_dimensions[col].width = width
@@ -525,9 +725,16 @@ def send_email(filepath, period_label, now_bjt, all_data):
     ]
     for game, data in all_data.items():
         posts = data.get("posts", [])
-        body_lines.append(f"\n【{game}】r/{data.get('subreddit', game)} - {len(posts)}帖")
+        tool_opp = sum(1 for p in posts if p.get("is_tool_opportunity"))
+        pain = sum(1 for p in posts if p.get("is_pain_point"))
+        body_lines.append(f"\n【{game}】r/{data.get('subreddit', game)} - {len(posts)}帖 (工具引流:{tool_opp} 痛点:{pain})")
         for p in posts[:3]:
-            body_lines.append(f"  - {p['title'][:60]}")
+            tag = ""
+            if p.get("is_tool_opportunity"):
+                tag = " [A-引流]"
+            elif p.get("is_pain_point"):
+                tag = " [B-痛点]"
+            body_lines.append(f"  - {p['title'][:60]}{tag}")
 
     body = "\n".join(body_lines)
     msg.attach(MIMEText(body, "plain", "utf-8"))
@@ -568,7 +775,7 @@ def main():
 
     for game, subreddit_names in SUBREDDITS.items():
         print(f"\n--- Fetching {game} (subreddits: {subreddit_names}) ---")
-        posts, actual_sub = get_hot_posts(subreddit_names, POSTS_PER_SUB)
+        posts, actual_sub = get_hot_posts(subreddit_names, POSTS_PER_SUB, game=game)
 
         # Get top comments for each post
         for i, post in enumerate(posts):
