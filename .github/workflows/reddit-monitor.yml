@@ -45,6 +45,13 @@ jobs:
           EMAIL_PASS: ${{ secrets.QQ_SMTP_CODE }}
           TO_ADDR: 851372967@qq.com
 
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: reddit-reports
+          path: reports/
+          retention-days: 30
+
       - name: Upload reports via GitHub API
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -97,7 +104,9 @@ jobs:
 
           import glob
           for f in glob.glob('reports/*.xlsx') + glob.glob('reports/*.json'):
-              with open(f, 'r', encoding='utf-8') as fh:
+              import base64 as b64
+            with open(f, 'rb') as fh:
+                content = b64.b64encode(fh.read()).decode('ascii')
                   content = fh.read()
               fname = os.path.basename(f)
               print(f'Uploading {fname}...')
