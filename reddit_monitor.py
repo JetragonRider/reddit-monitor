@@ -112,6 +112,74 @@ PAIN_POINT_KEYWORDS = {
     }
 }
 
+# ============================================================
+# Facebook 搜索配置
+# ============================================================
+FB_SEARCH_QUERIES = {
+    "Palworld": "Palworld",
+    "CS2": "Counter-Strike 2 CS2",
+    "Valorant": "Valorant",
+    "LOL": "League of Legends",
+    "DeltaForce": "Delta Force game",
+    "TFT": "Teamfight Tactics TFT",
+}
+
+
+def search_facebook_posts(game, query, limit=15):
+    """Search for Facebook posts about a game using DuckDuckGo (site:facebook.com)."""
+    # Use DuckDuckGo HTML endpoint to search site:facebook.com
+    search_url = f"https://html.duckduckgo.com/html/?q=site:facebook.com+{query.replace(' ', '+')}"
+    print(f"  FB Search: {search_url}")
+    status, content = fetch_url(search_url, retries=3, delay=5)
+    if not content:
+        print(f"  FB search failed for {game}")
+        return []
+
+    import re as _re
+    text = content.decode("utf-8", errors="replace")
+
+    # Parse DuckDuckGo HTML results
+    posts = []
+    # DuckDuckGo HTML results have links like:
+    # <a rel="nofollow" class="result__a" href="https://facebook.com/...">
+    links = _re.findall(r'class="result__a"[^>]*href="([^"]*facebook[^"]*)"', text)
+    titles = _re.findall(r'class="result__a"[^>]*>(.*?)</a>', text, _re.DOTALL)
+    snippets = _re.findall(r'class="result__snippet"[^>]*>(.*?)</[^>]+>', text, _re.DOTALL)
+
+    for i in range(min(len(links), limit)):
+        url = links[i].replace("&amp;", "&")
+        # Clean up the URL (DuckDuckGo wraps URLs)
+        if "uddg=" in url:
+            import urllib.parse
+            parsed = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+            if "uddg" in parsed:
+                url = parsed["uddg"][0]
+
+        title = _re.sub(r'<[^>]+>', '', titles[i]).strip() if i < len(titles) else ""
+        snippet = _re.sub(r'<[^>]+>', '', snippets[i]).strip() if i < len(snippets) else ""
+
+        post = {
+            "title": title[:200],
+            "url": url,
+            "author": "Facebook User",
+            "score": 0,
+            "num_comments": 0,
+            "upvote_ratio": 0,
+            "selftext": snippet[:500],
+            "link_flair_text": "Facebook",
+            "subreddit": "facebook",
+            "sort_type": "facebook",
+            "created_utc": 0,
+        }
+
+        # Classify using the same rules
+        classify_post(post, game)
+        posts.append(post)
+
+    print(f"  FB: Found {len(posts)} results for {game}")
+    return posts
+
+
 POSTS_PER_SUB = 25
 COMMENTS_PER_POST = 10
 
@@ -788,9 +856,19 @@ def main():
             else:
                 post["comments"] = []
 
+        # Also search Facebook
+        fb_query = FB_SEARCH_QUERIES.get(game, game)
+        fb_posts = search_facebook_posts(game, fb_query, limit=15)
+
+        # Merge Reddit + Facebook posts
+        all_posts = posts + fb_posts
+
         # Filter posts by time period
-        filtered_posts = filter_posts_by_time(posts, start_time, end_time)
-        print(f"  Total: {len(posts)} posts, filtered to time period: {len(filtered_posts)} posts")
+        filtered_posts = filter_posts_by_time(all_posts, start_time, end_time)
+        # If time filter removes everything (Facebook posts don't have timestamps), keep all
+        if len(filtered_posts) == 0 and len(all_posts) > 0:
+            filtered_posts = all_posts
+        print(f"  Total: {len(all_posts)} posts (Reddit:{len(posts)} FB:{len(fb_posts)}), filtered: {len(filtered_posts)}")
 
         all_data[game] = {
             "subreddit": actual_sub,
@@ -798,7 +876,7 @@ def main():
             "summary": summarize_discussion(filtered_posts),
         }
 
-        print(f"  Got {len(filtered_posts)} posts from r/{actual_sub}")
+        print(f"  Got {len(filtered_posts)} posts for {game}")
         time.sleep(2)
 
     # Generate Excel
