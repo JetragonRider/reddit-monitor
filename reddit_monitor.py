@@ -124,6 +124,18 @@ FB_SEARCH_QUERIES = {
     "TFT": "Teamfight Tactics TFT",
 }
 
+# ============================================================
+# X (Twitter) 搜索配置
+# ============================================================
+X_SEARCH_QUERIES = {
+    "Palworld": "Palworld",
+    "CS2": "CS2 Counter-Strike",
+    "Valorant": "Valorant",
+    "LOL": "League of Legends LOL",
+    "DeltaForce": "Delta Force game",
+    "TFT": "Teamfight Tactics TFT",
+}
+
 
 def search_facebook_posts(game, query, limit=15):
     """Search for Facebook posts about a game using DuckDuckGo (site:facebook.com)."""
@@ -177,6 +189,59 @@ def search_facebook_posts(game, query, limit=15):
         posts.append(post)
 
     print(f"  FB: Found {len(posts)} results for {game}")
+    return posts
+
+
+def search_x_posts(game, query, limit=15):
+    """Search for X (Twitter) posts about a game using DuckDuckGo (site:x.com + site:twitter.com)."""
+    # Search both x.com and twitter.com (old domain still has content)
+    search_url = f"https://html.duckduckgo.com/html/?q=site:x.com+OR+site:twitter.com+{query.replace(' ', '+')}"
+    print(f"  X Search: {search_url}")
+    status, content = fetch_url(search_url, retries=3, delay=5)
+    if not content:
+        print(f"  X search failed for {game}")
+        return []
+
+    import re as _re
+    text = content.decode("utf-8", errors="replace")
+
+    posts = []
+    # DuckDuckGo HTML results
+    links = _re.findall(r'class="result__a"[^>]*href="([^"]*(?:x\.com|twitter\.com)[^"]*)"', text)
+    titles = _re.findall(r'class="result__a"[^>]*>(.*?)</a>', text, _re.DOTALL)
+    snippets = _re.findall(r'class="result__snippet"[^>]*>(.*?)</[^>]+>', text, _re.DOTALL)
+
+    for i in range(min(len(links), limit)):
+        url = links[i].replace("&amp;", "&")
+        # Clean up DuckDuckGo redirect URL
+        if "uddg=" in url:
+            import urllib.parse
+            parsed = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+            if "uddg" in parsed:
+                url = parsed["uddg"][0]
+
+        title = _re.sub(r'<[^>]+>', '', titles[i]).strip() if i < len(titles) else ""
+        snippet = _re.sub(r'<[^>]+>', '', snippets[i]).strip() if i < len(snippets) else ""
+
+        post = {
+            "title": title[:200],
+            "url": url,
+            "author": "X User",
+            "score": 0,
+            "num_comments": 0,
+            "upvote_ratio": 0,
+            "selftext": snippet[:500],
+            "link_flair_text": "X/Twitter",
+            "subreddit": "x_twitter",
+            "sort_type": "x",
+            "created_utc": 0,
+        }
+
+        # Classify using the same rules
+        classify_post(post, game)
+        posts.append(post)
+
+    print(f"  X: Found {len(posts)} results for {game}")
     return posts
 
 
@@ -795,7 +860,7 @@ def send_email(filepath, period_label, now_bjt, all_data):
         posts = data.get("posts", [])
         tool_opp = sum(1 for p in posts if p.get("is_tool_opportunity"))
         pain = sum(1 for p in posts if p.get("is_pain_point"))
-        body_lines.append(f"\n【{game}】r/{data.get('subreddit', game)} - {len(posts)}帖 (工具引流:{tool_opp} 痛点:{pain})")
+        body_lines.append(f"\n【{game}】r/{data.get('subreddit', game)} - {len(posts)}帖 (引流:{tool_opp} 痛点:{pain})")
         for p in posts[:3]:
             tag = ""
             if p.get("is_tool_opportunity"):
@@ -860,15 +925,19 @@ def main():
         fb_query = FB_SEARCH_QUERIES.get(game, game)
         fb_posts = search_facebook_posts(game, fb_query, limit=15)
 
-        # Merge Reddit + Facebook posts
-        all_posts = posts + fb_posts
+        # Also search X (Twitter)
+        x_query = X_SEARCH_QUERIES.get(game, game)
+        x_posts = search_x_posts(game, x_query, limit=15)
+
+        # Merge Reddit + Facebook + X posts
+        all_posts = posts + fb_posts + x_posts
 
         # Filter posts by time period
         filtered_posts = filter_posts_by_time(all_posts, start_time, end_time)
         # If time filter removes everything (Facebook posts don't have timestamps), keep all
         if len(filtered_posts) == 0 and len(all_posts) > 0:
             filtered_posts = all_posts
-        print(f"  Total: {len(all_posts)} posts (Reddit:{len(posts)} FB:{len(fb_posts)}), filtered: {len(filtered_posts)}")
+        print(f"  Total: {len(all_posts)} posts (Reddit:{len(posts)} FB:{len(fb_posts)} X:{len(x_posts)}), filtered: {len(filtered_posts)}")
 
         all_data[game] = {
             "subreddit": actual_sub,
