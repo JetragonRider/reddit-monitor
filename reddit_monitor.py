@@ -137,110 +137,158 @@ X_SEARCH_QUERIES = {
 }
 
 
-def search_facebook_posts(game, query, limit=15):
-    """Search for Facebook posts about a game using DuckDuckGo (site:facebook.com)."""
-    # Use DuckDuckGo HTML endpoint to search site:facebook.com
-    search_url = f"https://html.duckduckgo.com/html/?q=site:facebook.com+{query.replace(' ', '+')}"
-    print(f"  FB Search: {search_url}")
-    status, content = fetch_url(search_url, retries=3, delay=5)
-    if not content:
-        print(f"  FB search failed for {game}")
-        return []
+def _get_search_engines(site, query):
+    """Return a list of search URLs from different engines to try, to avoid rate limiting."""
+    q = query.replace(' ', '+')
+    # Multiple search engines + DuckDuckGo with different endpoints
+    return [
+        # DuckDuckGo Lite (different endpoint)
+        f"https://lite.duckduckgo.com/lite/?q=site:{site}+{q}",
+        # DuckDuckGo HTML
+        f"https://html.duckduckgo.com/html/?q=site:{site}+{q}",
+        # Startpage (proxied Google results)
+        f"https://www.startpage.com/sp/search?q=site:{site}+{q}",
+        # Ecosia
+        f"https://www.ecosia.org/search?q=site:{site}+{q}",
+    ]
 
+
+def _get_random_ua():
+    """Return a random User-Agent to avoid fingerprinting."""
+    uas = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+    ]
+    import random
+    return random.choice(uas)
+
+
+def _search_multi_engine(site, query, limit=15, search_type="FB"):
+    """Search using multiple engines with UA rotation and delays to avoid rate limiting."""
     import re as _re
-    text = content.decode("utf-8", errors="replace")
+    import random
+    
+    search_urls = _get_search_engines(site, query)
+    
+    for attempt, search_url in enumerate(search_urls):
+        # Random delay between 8-15 seconds to avoid rate limiting
+        delay = random.uniform(8, 15)
+        if attempt == 0:
+            delay = 3  # First attempt faster
+        print(f"  {search_type} Search (attempt {attempt+1}/{len(search_urls)}, delay {delay:.0f}s): {search_url[:80]}...")
+        time.sleep(delay)
+        
+        headers = {"User-Agent": _get_random_ua(), "Accept": "text/html"}
+        status, content = fetch_url(search_url, retries=2, delay=5, custom_headers=headers)
+        if not content:
+            print(f"  {search_type} attempt {attempt+1} failed (no content)")
+            continue
+        
+        text = content.decode("utf-8", errors="replace")
+        
+        # Parse results - try different patterns for different search engines
+        escaped_site = site.replace('.', r'\.')
+        
+        # DuckDuckGo Lite format
+        links = _re.findall(r'class="result-link"[^>]*href="([^"]*' + escaped_site + r'[^"]*)"', text)
+        titles = _re.findall(r'class="result-snippet"[^>]*>(.*?)</td>', text, _re.DOTALL)
+        
+        # DuckDuckGo HTML format
+        if not links:
+            links = _re.findall(r'class="result__a"[^>]*href="([^"]*' + escaped_site + r'[^"]*)"', text)
+            titles = _re.findall(r'class="result__a"[^>]*>(.*?)</a>', text, _re.DOTALL)
+        snippets = _re.findall(r'class="result__snippet"[^>]*>(.*?)</[^>]+>', text, _re.DOTALL)
+        
+        # Startpage format
+        if not links:
+            links = _re.findall(r'href="([^"]*' + escaped_site + r'[^"]*)"[^>]*class="result-title"', text)
+            titles = _re.findall(r'class="result-title"[^>]*>(.*?)</a>', text, _re.DOTALL)
+            snippets = _re.findall(r'class="result-excerpt"[^>]*>(.*?)</p>', text, _re.DOTALL)
+        
+        # Ecosia format
+        if not links:
+            links = _re.findall(r'href="([^"]*' + escaped_site + r'[^"]*)"[^>]*', text)
+            titles = _re.findall(r'<span[^>]*>(.*?)</span>', text, _re.DOTALL)
+            snippets = _re.findall(r'class="snippet"[^>]*>(.*?)</[^>]+>', text, _re.DOTALL)
+        
+        if links:
+            print(f"  {search_type}: Found {len(links)} links on attempt {attempt+1}")
+            return links, titles, snippets
+    
+    print(f"  {search_type}: All {len(search_urls)} engines exhausted, no results")
+    return [], [], []
 
-    # Parse DuckDuckGo HTML results
+
+def search_facebook_posts(game, query, limit=15):
+    """Search for Facebook posts about a game using multiple search engines."""
+    links, titles, snippets = _search_multi_engine("facebook.com", query, limit, "FB")
+    if not links:
+        print(f"  FB: Found 0 results for {game}")
+        return []
+    
+    import re as _re
+    import urllib.parse
     posts = []
-    # DuckDuckGo HTML results have links like:
-    # <a rel="nofollow" class="result__a" href="https://facebook.com/...">
-    links = _re.findall(r'class="result__a"[^>]*href="([^"]*facebook[^"]*)"', text)
-    titles = _re.findall(r'class="result__a"[^>]*>(.*?)</a>', text, _re.DOTALL)
-    snippets = _re.findall(r'class="result__snippet"[^>]*>(.*?)</[^>]+>', text, _re.DOTALL)
-
     for i in range(min(len(links), limit)):
         url = links[i].replace("&amp;", "&")
-        # Clean up the URL (DuckDuckGo wraps URLs)
         if "uddg=" in url:
-            import urllib.parse
             parsed = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
             if "uddg" in parsed:
                 url = parsed["uddg"][0]
-
+        
         title = _re.sub(r'<[^>]+>', '', titles[i]).strip() if i < len(titles) else ""
         snippet = _re.sub(r'<[^>]+>', '', snippets[i]).strip() if i < len(snippets) else ""
-
+        
         post = {
-            "title": title[:200],
-            "url": url,
-            "author": "Facebook User",
-            "score": 0,
-            "num_comments": 0,
-            "upvote_ratio": 0,
-            "selftext": snippet[:500],
-            "link_flair_text": "Facebook",
-            "subreddit": "facebook",
-            "sort_type": "facebook",
-            "created_utc": 0,
+            "title": title[:200], "url": url, "author": "Facebook User",
+            "score": 0, "num_comments": 0, "upvote_ratio": 0,
+            "selftext": snippet[:500], "link_flair_text": "Facebook",
+            "subreddit": "facebook", "sort_type": "facebook", "created_utc": 0,
         }
-
-        # Classify using the same rules
         classify_post(post, game)
         posts.append(post)
-
+    
     print(f"  FB: Found {len(posts)} results for {game}")
     return posts
 
 
 def search_x_posts(game, query, limit=15):
-    """Search for X (Twitter) posts about a game using DuckDuckGo (site:x.com + site:twitter.com)."""
-    # Search both x.com and twitter.com (old domain still has content)
-    search_url = f"https://html.duckduckgo.com/html/?q=site:x.com+OR+site:twitter.com+{query.replace(' ', '+')}"
-    print(f"  X Search: {search_url}")
-    status, content = fetch_url(search_url, retries=3, delay=5)
-    if not content:
-        print(f"  X search failed for {game}")
+    """Search for X (Twitter) posts using multiple search engines."""
+    # Try x.com first, then twitter.com as fallback
+    links, titles, snippets = _search_multi_engine("x.com", query, limit, "X")
+    if not links:
+        print(f"  X: Trying twitter.com fallback for {game}")
+        links, titles, snippets = _search_multi_engine("twitter.com", query, limit, "X")
+    
+    if not links:
+        print(f"  X: Found 0 results for {game}")
         return []
-
+    
     import re as _re
-    text = content.decode("utf-8", errors="replace")
-
+    import urllib.parse
     posts = []
-    # DuckDuckGo HTML results
-    links = _re.findall(r'class="result__a"[^>]*href="([^"]*(?:x\.com|twitter\.com)[^"]*)"', text)
-    titles = _re.findall(r'class="result__a"[^>]*>(.*?)</a>', text, _re.DOTALL)
-    snippets = _re.findall(r'class="result__snippet"[^>]*>(.*?)</[^>]+>', text, _re.DOTALL)
-
     for i in range(min(len(links), limit)):
         url = links[i].replace("&amp;", "&")
-        # Clean up DuckDuckGo redirect URL
         if "uddg=" in url:
-            import urllib.parse
             parsed = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
             if "uddg" in parsed:
                 url = parsed["uddg"][0]
-
+        
         title = _re.sub(r'<[^>]+>', '', titles[i]).strip() if i < len(titles) else ""
         snippet = _re.sub(r'<[^>]+>', '', snippets[i]).strip() if i < len(snippets) else ""
-
+        
         post = {
-            "title": title[:200],
-            "url": url,
-            "author": "X User",
-            "score": 0,
-            "num_comments": 0,
-            "upvote_ratio": 0,
-            "selftext": snippet[:500],
-            "link_flair_text": "X/Twitter",
-            "subreddit": "x_twitter",
-            "sort_type": "x",
-            "created_utc": 0,
+            "title": title[:200], "url": url, "author": "X User",
+            "score": 0, "num_comments": 0, "upvote_ratio": 0,
+            "selftext": snippet[:500], "link_flair_text": "X/Twitter",
+            "subreddit": "x_twitter", "sort_type": "x", "created_utc": 0,
         }
-
-        # Classify using the same rules
         classify_post(post, game)
         posts.append(post)
-
+    
     print(f"  X: Found {len(posts)} results for {game}")
     return posts
 
@@ -259,11 +307,12 @@ HEADERS = {
 }
 
 
-def fetch_url(url, retries=3, delay=5):
+def fetch_url(url, retries=3, delay=5, custom_headers=None):
     """Fetch URL content with retries. Returns (status_code, content_bytes)."""
     for attempt in range(retries):
         try:
-            req = urllib.request.Request(url, headers=HEADERS)
+            req_headers = custom_headers if custom_headers else HEADERS
+            req = urllib.request.Request(url, headers=req_headers)
             with urllib.request.urlopen(req, context=ctx, timeout=30) as resp:
                 return resp.status, resp.read()
         except urllib.error.HTTPError as e:
