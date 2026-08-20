@@ -23,7 +23,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: pip install openpyxl
+      - run: pip install openpyxl playwright
+      - run: playwright install chromium --with-deps
 
       - name: Determine report time
         run: |
@@ -45,12 +46,13 @@ jobs:
           EMAIL_PASS: ${{ secrets.QQ_SMTP_CODE }}
           TO_ADDR: 851372967@qq.com
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: reddit-reports
-          path: reports/
-          retention-days: 30
+      - name: Run FB/X Playwright Scraper
+        run: |
+          python fb_x_scraper.py
+        env:
+          OUTPUT_FILE: reports/fb_x_results.json
+
+      - name: Merge FB/X data into report
 
       - name: Upload reports via GitHub API
         env:
@@ -104,9 +106,7 @@ jobs:
 
           import glob
           for f in glob.glob('reports/*.xlsx') + glob.glob('reports/*.json'):
-              import base64 as b64
-            with open(f, 'rb') as fh:
-                content = b64.b64encode(fh.read()).decode('ascii')
+              with open(f, 'r', encoding='utf-8') as fh:
                   content = fh.read()
               fname = os.path.basename(f)
               print(f'Uploading {fname}...')
