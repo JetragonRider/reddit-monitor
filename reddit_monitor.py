@@ -922,18 +922,53 @@ def fetch_rss(subreddit, sort="hot", limit=POSTS_PER_SUB):
             category = entry.find("{http://www.w3.org/2005/Atom}category")
         post["link_flair_text"] = category.get("term", "") if category is not None else ""
 
-        # Try to extract score from content (Reddit includes it in the feed)
+        # Try to extract score and comments from the RSS feed
         post["score"] = 0
         post["num_comments"] = 0
         post["upvote_ratio"] = 0
 
-        # Try to find score in the content text
-        score_match = re.search(r'(\d+)\s*points?', text, re.IGNORECASE)
+        # Method 1: Parse from thr:count (Atom thread extension - Reddit includes comment count)
+        thr_ns = "http://purl.org/syndication/thread/1.0"
+        thr_total = entry.find(f"{{{thr_ns}}}total")
+        if thr_total is not None and thr_total.text:
+            try:
+                post["num_comments"] = int(thr_total.text)
+            except:
+                pass
+
+        # Method 2: Try to find score/comments in the content HTML (before stripping tags)
+        raw_content = ""
+        if content_elem is not None and content_elem.text:
+            raw_content = content_elem.text
+        elif summary is not None and summary.text:
+            raw_content = summary.text
+
+        # Reddit RSS includes HTML like: <!-- SC_OFF --> ... <!-- SC_ON -->
+        # Sometimes includes score data in data attributes or links
+        score_match = re.search(r'(\d+)\s*points?', raw_content, re.IGNORECASE)
         if score_match:
             post["score"] = int(score_match.group(1))
-        comment_match = re.search(r'(\d+)\s*comments?', text, re.IGNORECASE)
-        if comment_match:
+        comment_match = re.search(r'(\d+)\s*comments?', raw_content, re.IGNORECASE)
+        if comment_match and post["num_comments"] == 0:
             post["num_comments"] = int(comment_match.group(1))
+
+        # Method 3: Parse the comments URL (Reddit RSS links include comment count in URL)
+        # The link href often is: https://www.reddit.com/r/sub/comments/ID/title/
+        # The comments page URL can give us the count
+        all_links = entry.findall("atom:link", ns) if ns else []
+        for lnk in all_links:
+            if lnk is None:
+                continue
+            # Reddit provides a "replies" link with count
+            rel = lnk.get("rel", "")
+            href = lnk.get("href", "")
+            if "replies" in rel or "comments" in href:
+                thr_count = lnk.get("{http://purl.org/syndication/thread/1.0}count")
+                if thr_count:
+                    try:
+                        post["num_comments"] = int(thr_count)
+                    except:
+                        pass
 
         posts.append(post)
 
@@ -955,19 +990,30 @@ def get_hot_posts(subreddit_names, limit=POSTS_PER_SUB, game=None):
             posts = fetch_rss(subreddit, sort=sort, limit=limit)
             if posts:
                 # Enrich with JSON API for scores/comments (best effort)
-                print(f"  Enriching {sort} with JSON API data...")
-                json_url = f"https://www.reddit.com/r/{subreddit}/{sort}.json?limit={limit}"
-                json_data = fetch_json(json_url, retries=2, delay=3)
-                if json_data and "data" in json_data and "children" in json_data["data"]:
-                    for i, child in enumerate(json_data["data"]["children"][:len(posts)]):
-                        d = child["data"]
-                        if i < len(posts):
-                            posts[i]["score"] = d.get("score", posts[i]["score"])
-                            posts[i]["num_comments"] = d.get("num_comments", posts[i]["num_comments"])
-                            posts[i]["upvote_ratio"] = d.get("upvote_ratio", 0)
-                            posts[i]["link_flair_text"] = d.get("link_flair_text", posts[i]["link_flair_text"])
-                            posts[i]["url"] = f"https://www.reddit.com{d.get('permalink', '')}"
-                    time.sleep(1)
+                # Try multiple Reddit domains to avoid rate limiting
+                for json_host in ["https://www.reddit.com", "https://old.reddit.com", "https://api.reddit.com"]:
+                    print(f"  Enriching {sort} with JSON API ({json_host})...")
+                    json_url = f"{json_host}/r/{subreddit}/{sort}.json?limit={limit}"
+                    json_headers = {
+                        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                        "Accept": "application/json",
+                    }
+                    json_data = fetch_json(json_url, retries=2, delay=3)
+                    if json_data and "data" in json_data and "children" in json_data["data"]:
+                        for i, child in enumerate(json_data["data"]["children"][:len(posts)]):
+                            d = child["data"]
+                            if i < len(posts):
+                                posts[i]["score"] = d.get("score", posts[i]["score"])
+                                posts[i]["num_comments"] = d.get("num_comments", posts[i]["num_comments"])
+                                posts[i]["upvote_ratio"] = d.get("upvote_ratio", 0)
+                                posts[i]["link_flair_text"] = d.get("link_flair_text", posts[i]["link_flair_text"])
+                                posts[i]["url"] = f"https://www.reddit.com{d.get('permalink', '')}"
+                        print(f"    Enriched {min(len(posts), len(json_data['data']['children']))} posts with scores/comments")
+                        time.sleep(1)
+                        break
+                    else:
+                        print(f"    JSON API failed on {json_host}, trying next...")
+                        time.sleep(2)
 
                 # Add sort tag and deduplicate
                 for p in posts:
