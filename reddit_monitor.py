@@ -388,6 +388,188 @@ def fetch_fb_x_via_reddit(game, query, limit=10):
     return posts
 
 
+def fetch_fb_x_via_playwright(game, fb_query, x_query, limit=10):
+    """Fetch FB/X posts using Playwright browser (bypasses search engine blocking)."""
+    posts = []
+    
+    try:
+        from playwright.sync_api import sync_playwright
+        import time as _time
+        import random
+        
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-gpu"])
+            context = browser.new_context(
+                user_agent=random.choice([
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
+                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+                ]),
+                viewport={"width": 1920, "height": 1080},
+                locale="en-US",
+            )
+            
+            # === Facebook scraping ===
+            fb_urls_to_try = [
+                f"https://www.facebook.com/search/posts?q={fb_query.replace(' ', '+')}",
+                f"https://www.facebook.com/hashtag/{fb_query.split()[0].lower()}",
+            ]
+            
+            # Try Facebook public group pages
+            fb_group_map = {
+                "Palworld": "https://www.facebook.com/groups/palworld",
+                "CS2": "https://www.facebook.com/groups/counterstrike",
+                "Valorant": "https://www.facebook.com/PlayVALORANT",
+                "LOL": "https://www.facebook.com/leagueoflegends",
+                "DeltaForce": "https://www.facebook.com/DeltaForceGame",
+                "TFT": "https://www.facebook.com/TeamfightTactics",
+            }
+            
+            fb_url = fb_group_map.get(game, fb_urls_to_try[0])
+            print(f"  FB Playwright: {fb_url[:60]}...")
+            
+            page = context.new_page()
+            page.set_default_timeout(15000)
+            
+            try:
+                page.goto(fb_url, wait_until="domcontentloaded")
+                _time.sleep(random.uniform(3, 5))
+                
+                # Scroll to load more content
+                for _ in range(3):
+                    page.evaluate("window.scrollBy(0, 1000)")
+                    _time.sleep(1)
+                
+                # Extract posts from FB page
+                content = page.content()
+                import re as _re
+                
+                # FB posts are in div elements with data attributes
+                # Try multiple selectors
+                post_elements = page.query_selector_all('[data-ad-comet-preview="message"]')
+                if not post_elements:
+                    post_elements = page.query_selector_all('[dir="auto"] > span')
+                if not post_elements:
+                    post_elements = page.query_selector_all('div[data-testid="post_message"]')
+                
+                seen = set()
+                for elem in post_elements[:limit*2]:
+                    try:
+                        text = elem.inner_text().strip()
+                        if len(text) > 20 and text not in seen:
+                            seen.add(text)
+                            post = {
+                                "title": text[:200],
+                                "url": fb_url,
+                                "author": "Facebook User",
+                                "score": 0,
+                                "num_comments": 0,
+                                "upvote_ratio": 0,
+                                "selftext": text[:500],
+                                "link_flair_text": "Facebook",
+                                "subreddit": "facebook",
+                                "sort_type": "facebook",
+                                "created_utc": 0,
+                            }
+                            classify_post(post, game)
+                            posts.append(post)
+                            if len([p for p in posts if p["sort_type"] == "facebook"]) >= limit:
+                                break
+                    except:
+                        continue
+                
+                fb_count = len([p for p in posts if p["sort_type"] == "facebook"])
+                print(f"  FB Playwright: Found {fb_count} posts")
+            except Exception as e:
+                print(f"  FB Playwright error: {e}")
+            finally:
+                page.close()
+            
+            # === X/Twitter scraping ===
+            x_account_map = {
+                "Palworld": "Palworld_EN",
+                "CS2": "csgo_dev",
+                "Valorant": "PlayVALORANT",
+                "LOL": "LeagueOfLegends",
+                "DeltaForce": "DeltaForceGame",
+                "TFT": "TFT",
+            }
+            
+            x_account = x_account_map.get(game, game)
+            x_url = f"https://x.com/{x_account}"
+            print(f"  X Playwright: {x_url}")
+            
+            page2 = context.new_page()
+            page2.set_default_timeout(15000)
+            
+            try:
+                page2.goto(x_url, wait_until="domcontentloaded")
+                _time.sleep(random.uniform(3, 5))
+                
+                # Scroll to load tweets
+                for _ in range(3):
+                    page2.evaluate("window.scrollBy(0, 1000)")
+                    _time.sleep(1)
+                
+                # Extract tweets
+                tweet_elements = page2.query_selector_all('[data-testid="tweetText"]')
+                
+                seen = set()
+                for elem in tweet_elements[:limit*2]:
+                    try:
+                        text = elem.inner_text().strip()
+                        if len(text) > 10 and text not in seen:
+                            seen.add(text)
+                            # Try to find the tweet URL from parent element
+                            tweet_url = x_url
+                            try:
+                                link = elem.evaluate("el => { let parent = el.parentElement; while(parent) { let a = parent.querySelector('a[href*="/status/"]'); if(a) return a.href; parent = parent.parentElement; } return ''; }")
+                                if link:
+                                    tweet_url = link
+                            except:
+                                pass
+                            
+                            post = {
+                                "title": text[:200],
+                                "url": tweet_url,
+                                "author": f"@{x_account}",
+                                "score": 0,
+                                "num_comments": 0,
+                                "upvote_ratio": 0,
+                                "selftext": text[:500],
+                                "link_flair_text": "X/Twitter",
+                                "subreddit": "x_twitter",
+                                "sort_type": "x",
+                                "created_utc": 0,
+                            }
+                            classify_post(post, game)
+                            posts.append(post)
+                            if len([p for p in posts if p["sort_type"] == "x"]) >= limit:
+                                break
+                    except:
+                        continue
+                
+                x_count = len([p for p in posts if p["sort_type"] == "x"])
+                print(f"  X Playwright: Found {x_count} posts")
+            except Exception as e:
+                print(f"  X Playwright error: {e}")
+            finally:
+                page2.close()
+            
+            browser.close()
+            
+    except ImportError:
+        print("  Playwright not installed, skipping browser scraping")
+    except Exception as e:
+        print(f"  Playwright error: {e}")
+    
+    total_fb = len([p for p in posts if p["sort_type"] == "facebook"])
+    total_x = len([p for p in posts if p["sort_type"] == "x"])
+    print(f"  Playwright total: FB={total_fb} X={total_x} for {game}")
+    return posts
+
+
+
 POSTS_PER_SUB = 25
 COMMENTS_PER_POST = 10
 
@@ -1079,15 +1261,18 @@ def main():
         # NEW: Find FB/X content via Reddit cross-post search
         cross_posts = fetch_fb_x_via_reddit(game, fb_query, limit=10)
 
-        # Merge all: Reddit + FB search + X search + X API + cross-posts
-        all_posts = posts + fb_posts + x_posts + x_api_posts + cross_posts
+        # NEW: Fetch FB/X via Playwright browser (bypasses search engine blocking)
+        playwright_posts = fetch_fb_x_via_playwright(game, fb_query, x_query, limit=10)
+
+        # Merge all: Reddit + FB search + X search + X API + cross-posts + Playwright
+        all_posts = posts + fb_posts + x_posts + x_api_posts + cross_posts + playwright_posts
 
         # Filter posts by time period
         filtered_posts = filter_posts_by_time(all_posts, start_time, end_time)
         # If time filter removes everything (Facebook posts don't have timestamps), keep all
         if len(filtered_posts) == 0 and len(all_posts) > 0:
             filtered_posts = all_posts
-        print(f"  Total: {len(all_posts)} posts (Reddit:{len(posts)} FB:{len(fb_posts)} X:{len(x_posts)}+{len(x_api_posts)}api XP:{len(cross_posts)}), filtered: {len(filtered_posts)}")
+        print(f"  Total: {len(all_posts)} posts (R:{len(posts)} FB:{len(fb_posts)} X:{len(x_posts)}+{len(x_api_posts)}api XP:{len(cross_posts)} PW:{len(playwright_posts)}), filtered: {len(filtered_posts)}")
 
         all_data[game] = {
             "subreddit": actual_sub,
