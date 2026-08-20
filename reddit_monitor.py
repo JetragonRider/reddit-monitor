@@ -618,6 +618,160 @@ def fetch_json(url, retries=3, delay=5):
     return None
 
 
+# ============================================================
+# 主贴内容总结配置
+# ============================================================
+# Post type detection keywords
+POST_TYPE_KEYWORDS = {
+    "新闻资讯": ["update", "patch", "news", "announce", "release", "launch", "season", "event", "maintenance", "downtime", "server", "official"],
+    "攻略教程": ["guide", "how to", "tips", "trick", "best", "build", "tier list", "meta", "strategy", "walkthrough", "tutorial", "explain"],
+    "问题求助": ["help", "how do", "why", "question", "stuck", "can't", "cannot", "issue", "problem", "fix", "bug", "crash", "error"],
+    "讨论交流": ["discuss", "thought", "opinion", "what do you think", "anyone else", "does anyone", "am i the only", "hot take", "unpopular opinion"],
+    "内容分享": ["look at", "check out", "my", "i made", "i drew", "fan art", "clip", "video", "screenshot", "showcase", "share"],
+    "赛事竞技": ["tournament", "esports", "vct", "major", "championship", "pro", "team", "match", "vs", "vs.", "score", "bracket", "qualifier"],
+    "反馈建议": ["suggestion", "feedback", "wish", "should add", "need", "would be nice", "please add", "feature request", "idea"],
+    "吐槽抱怨": ["broken", "terrible", "awful", "worst", "hate", "annoying", "frustrating", "unfair", "ridiculous", "stupid", "trash"],
+}
+
+# Topic detection keywords by category
+TOPIC_KEYWORDS = {
+    "武器装备": ["weapon", "gun", "rifle", "skin", "knife", "loadout", "attachment", "crosshair", "accuracy", "damage", "fire rate"],
+    "角色英雄": ["agent", "character", "hero", "champion", "ability", "ultimate", "skill", "passive", "rework", "buff", "nerf"],
+    "竞技对战": ["rank", "ranked", "matchmaking", "mmr", "elo", "diamond", "immortal", "radiant", "gold", "silver", "platinum", "master"],
+    "游戏更新": ["patch", "update", "version", "changelog", "hotfix", "maintenance", "season", "chapter", "battle pass"],
+    "经济系统": ["price", "market", "economy", "cost", "buy", "sell", "trade", "currency", "gold", "coin", "store", "shop"],
+    "地图场景": ["map", "location", "zone", "area", "spot", "position", "site", "territory", "poi", "point of interest"],
+    "社交社区": ["community", "friend", "guild", "clan", "team", "party", "squad", "multiplayer", "co-op", "coop", "online"],
+    "画质性能": ["fps", "lag", "stutter", "crash", "bug", "glitch", "graphics", "settings", "optimization", "performance", "driver"],
+    "角色培养": ["breeding", "level", "upgrade", "evolve", "skill tree", "talent", "mastery", "progression", "build"],
+    "赛事电竞": ["tournament", "esports", "pro", "vct", "major", "championship", "lec", "lcs", "lck", "vcs", "worlds", "international"],
+    "MOD创意": ["mod", "custom", "creative", "sandbox", "build", "design", "art", "creation", "blueprint"],
+    "新手相关": ["newbie", "beginner", "first time", "starter", "new player", "guide", "how to start"],
+    "故事剧情": ["lore", "story", "quest", "campaign", "narrative", "cutscene", "ending", "character background"],
+    "皮肤外观": ["skin", "cosmetic", "outfit", "emote", "spray", "card", "banner", "appearance", "customize"],
+    "配装策略": ["comp", "composition", "meta", "tier list", "synergy", "team comp", "build order", "strategy"],
+    "操作技巧": ["mechanics", "aim", "movement", "utility", "smoke", "flashbang", "grenade", "recoil", "spray", "flick"],
+}
+
+
+def summarize_post_content(post, game):
+    """Generate a detailed Chinese summary of what a post is discussing.
+    
+    Analyzes title, selftext, and comments to determine:
+    - Post type (news, guide, question, discussion, etc.)
+    - Main topic (weapons, agents, competitive, updates, etc.)
+    - Key discussion points from comments
+    - Sentiment and engagement level
+    """
+    title = post.get("title", "")
+    selftext = post.get("selftext", "")
+    comments = post.get("comments", [])
+    flair = post.get("link_flair_text", "")
+    score = post.get("score", 0)
+    num_comments = post.get("num_comments", 0)
+    
+    combined = f"{title} {selftext}".lower()
+    
+    # 1. Detect post type
+    post_type = "综合讨论"
+    for ptype, keywords in POST_TYPE_KEYWORDS.items():
+        matches = [kw for kw in keywords if kw in combined]
+        if matches:
+            post_type = ptype
+            break
+    
+    # Use flair as hint if available
+    if flair:
+        flair_lower = flair.lower()
+        if any(k in flair_lower for k in ["news", "update", "announcement"]):
+            post_type = "新闻资讯"
+        elif any(k in flair_lower for k in ["guide", "tip", "help"]):
+            post_type = "攻略教程"
+        elif any(k in flair_lower for k in ["discussion", "talk"]):
+            post_type = "讨论交流"
+        elif any(k in flair_lower for k in ["question", "help"]):
+            post_type = "问题求助"
+        elif any(k in flair_lower for k in ["art", "video", "clip"]):
+            post_type = "内容分享"
+    
+    # 2. Detect main topics
+    detected_topics = []
+    for topic, keywords in TOPIC_KEYWORDS.items():
+        matches = [kw for kw in keywords if kw in combined]
+        if matches:
+            detected_topics.append((topic, matches[:3]))
+    
+    # 3. Analyze comments for discussion themes
+    comment_themes = []
+    if comments:
+        comment_text = " ".join([c.get("body", "") for c in comments[:10]]).lower()
+        for topic, keywords in TOPIC_KEYWORDS.items():
+            matches = [kw for kw in keywords if kw in comment_text]
+            if matches and topic not in [t[0] for t in detected_topics]:
+                detected_topics.append((topic, matches[:2]))
+                comment_themes.append(topic)
+    
+    # 4. Determine sentiment/engagement
+    engagement = "低"
+    if score > 100 or num_comments > 50:
+        engagement = "高"
+    elif score > 30 or num_comments > 20:
+        engagement = "中"
+    
+    # 5. Extract key phrases from title
+    title_cn_map = {
+        "Palworld": "帕鲁",
+        "CS2": "CS2",
+        "Valorant": "瓦罗兰特",
+        "LOL": "英雄联盟",
+        "DeltaForce": "三角洲",
+        "TFT": "金铲铲",
+    }
+    game_cn = title_cn_map.get(game, game)
+    
+    # 6. Build detailed summary
+    summary_parts = []
+    
+    # Post type and engagement
+    summary_parts.append(f"【帖子类型】{post_type}，热度:{engagement}(↑{score}/💬{num_comments})")
+    
+    # Main topics
+    if detected_topics:
+        topics_str = "、".join([t[0] for t in detected_topics[:4]])
+        summary_parts.append(f"【讨论主题】{topics_str}")
+        
+        # Add matched keywords as context
+        for topic, matched_kws in detected_topics[:3]:
+            summary_parts.append(f"  · {topic}: 涉及「{'、'.join(matched_kws)}」")
+    else:
+        summary_parts.append("【讨论主题】综合话题")
+    
+    # Comment themes if different from post topics
+    if comment_themes:
+        unique_themes = [t for t in comment_themes if t not in [d[0] for d in detected_topics[:3]]]
+        if unique_themes:
+            summary_parts.append(f"【评论区延伸】{'、'.join(unique_themes[:3])}")
+    
+    # Title summary in Chinese context
+    summary_parts.append(f"【主贴概述】{title[:100]}")
+    
+    # Selftext summary
+    if selftext and len(selftext) > 20:
+        # Extract first meaningful sentence
+        sentences = selftext.replace("\n", " ").split(". ")
+        first_sentence = sentences[0][:150] if sentences else selftext[:150]
+        summary_parts.append(f"【正文要点】{first_sentence}")
+    
+    # Comment summary
+    if comments:
+        top_comment = comments[0]
+        summary_parts.append(f"【热评摘要】[{top_comment.get('author','')}] {top_comment.get('body','')[:100]}")
+        if len(comments) > 1:
+            summary_parts.append(f"【次评摘要】[{comments[1].get('author','')}] {comments[1].get('body','')[:80]}")
+    
+    return "\n".join(summary_parts)
+
+
 def classify_post(post, game):
     """Classify a post as A (tool opportunity) or B (pain point) and add notes."""
     title = post.get("title", "").lower()
@@ -1022,8 +1176,14 @@ def create_excel_report(all_data, output_dir=".", period_label=""):
         ws_summary[f"A{row}"].font = Font(bold=True)
         row += 1
         for p in posts[:5]:
-            ws_summary[f"A{row}"] = f"  - {p['title']} (score:{p['score']} comments:{p['num_comments']})"
+            post_summary = summarize_post_content(p, game)
+            summary_lines = post_summary.split('\n')
+            display = f"  · {p['title']} (score:{p['score']} comments:{p['num_comments']})\n"
+            for line in summary_lines[:3]:
+                display += f"    {line}\n"
+            ws_summary[f"A{row}"] = display.strip()
             ws_summary[f"A{row}"].alignment = wrap_align
+            ws_summary.row_dimensions[row].height = 60
             row += 1
         row += 1
 
@@ -1087,7 +1247,11 @@ def create_excel_report(all_data, output_dir=".", period_label=""):
                 notes_cell.fill = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")  # Yellow
 
             ws.cell(row=r, column=12, value=comment_summary).alignment = wrap_align
-            ws.cell(row=r, column=13, value=post.get("selftext", "")[:200]).alignment = wrap_align
+            # Column 13: Detailed content summary
+            content_summary = summarize_post_content(post, game)
+            ws.cell(row=r, column=13, value=content_summary).alignment = wrap_align
+            # Make the summary cell taller for readability
+            ws.row_dimensions[r].height = 80
 
             for col in range(1, 14):
                 ws.cell(row=r, column=col).border = thin_border
@@ -1187,13 +1351,19 @@ def send_email(filepath, period_label, now_bjt, all_data):
         tool_opp = sum(1 for p in posts if p.get("is_tool_opportunity"))
         pain = sum(1 for p in posts if p.get("is_pain_point"))
         body_lines.append(f"\n【{game}】r/{data.get('subreddit', game)} - {len(posts)}帖 (引流:{tool_opp} 痛点:{pain})")
-        for p in posts[:3]:
+        for p in posts[:5]:
             tag = ""
             if p.get("is_tool_opportunity"):
                 tag = " [A-引流]"
             elif p.get("is_pain_point"):
                 tag = " [B-痛点]"
-            body_lines.append(f"  - {p['title'][:60]}{tag}")
+            # Add content summary
+            content_summary = summarize_post_content(p, game)
+            summary_lines = content_summary.split('\n')
+            body_lines.append(f"\n  {'='*50}")
+            body_lines.append(f"  {p['title'][:80]}{tag}")
+            for line in summary_lines[:6]:
+                body_lines.append(f"  {line}")
 
     body = "\n".join(body_lines)
     msg.attach(MIMEText(body, "plain", "utf-8"))
