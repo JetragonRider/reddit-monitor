@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       report_time:
-        description: 'Report time period (09:00, 14:00, 18:00)'
+        description: 'Report time (09:00, 14:00, 18:00, or now)'
         required: false
         default: 'now'
 
@@ -23,18 +23,26 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: pip install openpyxl playwright
-      - run: playwright install chromium --with-deps
-
-      - name: Determine report time
+      
+      - name: Install dependencies
         run: |
-          if [ "${{ github.event_name }}" = "schedule" ]; then
-            HOUR=$(date -u -d '+8 hours' '+%H')
-            echo "REPORT_TIME=${HOUR}:00" >> $GITHUB_ENV
+          pip install openpyxl python-docx
+          pip install playwright
+          npx playwright install chromium --with-deps
+      
+      - name: Determine report time
+        id: time
+        run: |
+          if [ "${{ github.event.inputs.report_time }}" = "09:00" ]; then
+            echo "REPORT_TIME=09:00" >> $GITHUB_ENV
+          elif [ "${{ github.event.inputs.report_time }}" = "14:00" ]; then
+            echo "REPORT_TIME=14:00" >> $GITHUB_ENV
+          elif [ "${{ github.event.inputs.report_time }}" = "18:00" ]; then
+            echo "REPORT_TIME=18:00" >> $GITHUB_ENV
           else
-            echo "REPORT_TIME=${{ github.event.inputs.report_time || 'now' }}" >> $GITHUB_ENV
+            echo "REPORT_TIME=now" >> $GITHUB_ENV
           fi
-
+      
       - name: Run Reddit Monitor
         run: |
           mkdir -p reports
@@ -44,17 +52,56 @@ jobs:
           REPORT_TIME: ${{ env.REPORT_TIME }}
           EMAIL_ADDR: 851372967@qq.com
           EMAIL_PASS: ${{ secrets.QQ_SMTP_CODE }}
-          TO_ADDR: 851372967@qq.com
-
-      - name: Run FB/X Playwright Scraper
-        run: |
-          python fb_x_scraper.py
-        env:
-          OUTPUT_FILE: reports/fb_x_results.json
-
+      
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: reddit-reports
           path: reports/
           retention-days: 30
+
+      - name: Upload reports via GitHub API
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          import base64 as b64
+          import json
+          import os
+          import urllib.request
+          
+          repo = os.environ.get("GITHUB_REPOSITORY", "")
+          token = os.environ.get("GH_TOKEN", "")
+          
+          for f in os.listdir("reports"):
+              fpath = os.path.join("reports", f)
+              with open(fpath, "rb") as fh:
+                  content = b64.b64encode(fh.read()).decode("ascii")
+              
+              # Get current SHA if file exists
+              api_url = f"https://api.github.com/repos/{repo}/contents/reports/{f}"
+              req = urllib.request.Request(api_url, headers={"Authorization": f"token {token}", "Accept": "application/vnd.github.v3+json"})
+              sha = None
+              try:
+                  resp = urllib.request.urlopen(req)
+                  data = json.loads(resp.read())
+                  sha = data.get("sha")
+              except:
+                  pass
+              
+              payload = json.dumps({
+                  "message": f"Update {f}",
+                  "content": content,
+                  "sha": sha
+              }).encode()
+              
+              req2 = urllib.request.Request(api_url, data=payload, headers={
+                  "Authorization": f"token {token}",
+                  "Accept": "application/vnd.github.v3+json",
+                  "Content-Type": "application/json"
+              }, method="PUT")
+              try:
+                  urllib.request.urlopen(req2)
+                  print(f"Uploaded: {f}")
+              except Exception as e:
+                  print(f"Upload failed for {f}: {e}")
+        shell: python
