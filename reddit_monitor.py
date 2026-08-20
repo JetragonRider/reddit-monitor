@@ -293,6 +293,101 @@ def search_x_posts(game, query, limit=15):
     return posts
 
 
+def fetch_x_via_syndication(game, screen_names=None, limit=15):
+    """Fetch X/Twitter posts via syndication API (no auth, no IP blocking)."""
+    import json as _json
+    posts = []
+    
+    x_accounts = {
+        "Palworld": ["Palworld_EN", "PalworldGame"],
+        "CS2": ["csgo_dev", "CS2"],
+        "Valorant": ["PlayVALORANT", "valorantsource"],
+        "LOL": ["LeagueOfLegends", "lolesports"],
+        "DeltaForce": ["DeltaForceGame", "TencentGames"],
+        "TFT": ["TFT", "TFTesports"],
+    }
+    
+    accounts = screen_names or x_accounts.get(game, [game])
+    
+    for account in accounts:
+        url = f"https://cdn.syndication.twimg.com/timeline/profile?screen_name={account}&count=10"
+        print(f"  X API: @{account}")
+        status, content = fetch_url(url, retries=2, delay=3)
+        if not content:
+            print(f"  X API failed for @{account}")
+            continue
+        
+        try:
+            data = _json.loads(content.decode("utf-8", errors="replace"))
+            tweets = data.get("tweets", [])
+            for tweet in tweets[:limit]:
+                text = tweet.get("full_text", tweet.get("text", ""))
+                tweet_id = tweet.get("id_str", tweet.get("id", ""))
+                
+                post = {
+                    "title": text[:200],
+                    "url": f"https://x.com/{account}/status/{tweet_id}",
+                    "author": f"@{account}",
+                    "score": 0,
+                    "num_comments": 0,
+                    "upvote_ratio": 0,
+                    "selftext": text[:500],
+                    "link_flair_text": "X/Twitter",
+                    "subreddit": "x_twitter",
+                    "sort_type": "x",
+                    "created_utc": 0,
+                }
+                classify_post(post, game)
+                posts.append(post)
+        except Exception as e:
+            print(f"  X API parse error for @{account}: {e}")
+    
+    print(f"  X (API): Found {len(posts)} posts for {game}")
+    return posts
+
+
+def fetch_fb_x_via_reddit(game, query, limit=10):
+    """Find FB/X content by searching Reddit for cross-posts linking to FB/X."""
+    import json as _json
+    search_terms = [f"url:facebook.com {query}", f"url:x.com {query}", f"url:twitter.com {query}"]
+    posts = []
+    
+    for term in search_terms:
+        url = f"https://www.reddit.com/search.json?q={urllib.parse.quote(term)}&limit=5&sort=new"
+        status, content = fetch_url(url, retries=2, delay=3)
+        if not content:
+            continue
+        
+        try:
+            data = _json.loads(content.decode("utf-8", errors="replace"))
+            children = data.get("data", {}).get("children", [])
+            for child in children:
+                rd = child.get("data", {})
+                post_url = rd.get("url", "")
+                if "facebook.com" in post_url or "x.com" in post_url or "twitter.com" in post_url:
+                    is_fb = "facebook.com" in post_url
+                    post = {
+                        "title": rd.get("title", "")[:200],
+                        "url": post_url,
+                        "author": rd.get("author", ""),
+                        "score": rd.get("score", 0),
+                        "num_comments": rd.get("num_comments", 0),
+                        "upvote_ratio": rd.get("upvote_ratio", 0),
+                        "selftext": rd.get("selftext", "")[:500],
+                        "link_flair_text": "Facebook" if is_fb else "X/Twitter",
+                        "subreddit": rd.get("subreddit", ""),
+                        "sort_type": "facebook" if is_fb else "x",
+                        "created_utc": rd.get("created_utc", 0),
+                    }
+                    classify_post(post, game)
+                    posts.append(post)
+        except Exception as e:
+            print(f"  Reddit crosspost error: {e}")
+    
+    print(f"  Reddit crosspost: Found {len(posts)} FB/X posts for {game}")
+    return posts
+
+
 POSTS_PER_SUB = 25
 COMMENTS_PER_POST = 10
 
@@ -970,23 +1065,29 @@ def main():
             else:
                 post["comments"] = []
 
-        # Also search Facebook
+        # Search Facebook via DuckDuckGo (may fail if IP blocked)
         fb_query = FB_SEARCH_QUERIES.get(game, game)
         fb_posts = search_facebook_posts(game, fb_query, limit=15)
 
-        # Also search X (Twitter)
+        # Search X via DuckDuckGo (may fail if IP blocked)
         x_query = X_SEARCH_QUERIES.get(game, game)
         x_posts = search_x_posts(game, x_query, limit=15)
 
-        # Merge Reddit + Facebook + X posts
-        all_posts = posts + fb_posts + x_posts
+        # NEW: Fetch X posts via syndication API (no auth, bypasses IP blocking)
+        x_api_posts = fetch_x_via_syndication(game, limit=15)
+
+        # NEW: Find FB/X content via Reddit cross-post search
+        cross_posts = fetch_fb_x_via_reddit(game, fb_query, limit=10)
+
+        # Merge all: Reddit + FB search + X search + X API + cross-posts
+        all_posts = posts + fb_posts + x_posts + x_api_posts + cross_posts
 
         # Filter posts by time period
         filtered_posts = filter_posts_by_time(all_posts, start_time, end_time)
         # If time filter removes everything (Facebook posts don't have timestamps), keep all
         if len(filtered_posts) == 0 and len(all_posts) > 0:
             filtered_posts = all_posts
-        print(f"  Total: {len(all_posts)} posts (Reddit:{len(posts)} FB:{len(fb_posts)} X:{len(x_posts)}), filtered: {len(filtered_posts)}")
+        print(f"  Total: {len(all_posts)} posts (Reddit:{len(posts)} FB:{len(fb_posts)} X:{len(x_posts)}+{len(x_api_posts)}api XP:{len(cross_posts)}), filtered: {len(filtered_posts)}")
 
         all_data[game] = {
             "subreddit": actual_sub,
