@@ -1666,7 +1666,7 @@ def send_summary_email(filepath, period_label, now_bjt, all_data):
     msg.attach(MIMEText(body, "plain", "utf-8"))
 
     with open(filepath, "rb") as f:
-        part = MIMEBase("application", "octet-stream")
+        part = MIMEBase("application", "vnd.openxmlformats-officedocument.wordprocessingml.document")
         part.set_payload(f.read())
         encoders.encode_base64(part)
         part.add_header("Content-Disposition", f'attachment; filename="{os.path.basename(filepath)}"')
