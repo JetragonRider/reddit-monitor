@@ -7,19 +7,21 @@ Falls back to JSON API if RSS fails.
 
 import json
 import os
+import re
 import sys
 import time
 import datetime
 import urllib.request
+import urllib.parse
 import urllib.error
 import ssl
 import xml.etree.ElementTree as ET
-import re
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
+from collections import Counter
 
 # For Excel generation
 try:
@@ -1389,6 +1391,300 @@ def send_email(filepath, period_label, now_bjt, all_data):
         return False
 
 
+def create_summary_word_report(all_data, output_dir=".", period_label=""):
+    """Create a separate Word document with detailed post summaries."""
+    from docx import Document
+    from docx.shared import Pt, RGBColor, Cm
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.enum.table import WD_TABLE_ALIGNMENT
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+    
+    now_bjt = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8)))
+    filename = f"summary_{now_bjt.strftime('%Y%m%d_%H%M')}.docx"
+    filepath = os.path.join(output_dir, filename)
+    
+    doc = Document()
+    
+    # Set default font
+    style = doc.styles['Normal']
+    style.font.name = '微软雅黑'
+    style.font.size = Pt(10.5)
+    style._element.rPr.rFonts.set(qn('w:eastAsia'), '微软雅黑')
+    
+    for section in doc.sections:
+        section.top_margin = Cm(2)
+        section.bottom_margin = Cm(2)
+        section.left_margin = Cm(2.5)
+        section.right_margin = Cm(2.5)
+    
+    def set_shading(cell, color):
+        s = OxmlElement('w:shd')
+        s.set(qn('w:fill'), color)
+        cell._tc.get_or_add_tcPr().append(s)
+    
+    def set_font(run, size=10.5, color=None, bold=False):
+        run.font.size = Pt(size)
+        run.font.name = '微软雅黑'
+        run._element.rPr.rFonts.set(qn('w:eastAsia'), '微软雅黑')
+        if color:
+            run.font.color.rgb = RGBColor.from_string(color)
+        run.bold = bold
+    
+    def add_heading_styled(doc, text, level=1, color='1F4E79'):
+        h = doc.add_heading(text, level=level)
+        for run in h.runs:
+            set_font(run, size={1:16, 2:13, 3:11}.get(level, 10.5), color=color, bold=True)
+        return h
+    
+    # === Cover ===
+    for _ in range(4):
+        doc.add_paragraph()
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = p.add_run('游戏社区主贴内容总结报告')
+    set_font(run, size=24, color='1F4E79', bold=True)
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = p.add_run(f'{period_label} | {now_bjt.strftime("%Y年%m月%d日 %H:%M")} BJT')
+    set_font(run, size=12, color='2E75B6')
+    doc.add_page_break()
+    
+    # === Summary table ===
+    add_heading_styled(doc, '一、巡查概况', level=1)
+    table = doc.add_table(rows=len(all_data)+2, cols=6)
+    table.style = 'Table Grid'
+    table.alignment = WD_TABLE_ALIGNMENT.CENTER
+    headers = ['社区', '帖子数', 'Reddit', 'Facebook', 'X(Twitter)', '热门话题']
+    for i, h in enumerate(headers):
+        cell = table.rows[0].cells[i]
+        cell.paragraphs[0].add_run(h).bold = True
+        cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+        set_shading(cell, '1F4E79')
+        set_font(cell.paragraphs[0].runs[0], size=9, color='FFFFFF', bold=True)
+    
+    for idx, (game, data) in enumerate(all_data.items()):
+        posts = data.get("posts", [])
+        rd_count = sum(1 for p in posts if p.get("sort_type") in ("hot", "new"))
+        fb_count = sum(1 for p in posts if p.get("sort_type") == "facebook")
+        x_count = sum(1 for p in posts if p.get("sort_type") == "x")
+        
+        # Collect top topics
+        all_topics = []
+        for p in posts:
+            summary = summarize_post_content(p, game)
+            for line in summary.split('\n'):
+                if line.startswith('【讨论主题】'):
+                    topics = line.replace('【讨论主题】', '').strip()
+                    all_topics.extend(topics.split('、'))
+        from collections import Counter
+        top_topics = Counter(all_topics).most_common(3)
+        topics_str = "、".join([t[0] for t in top_topics]) if top_topics else "综合话题"
+        
+        row = table.rows[idx+1]
+        row.cells[0].text = game
+        row.cells[1].text = str(len(posts))
+        row.cells[2].text = str(rd_count)
+        row.cells[3].text = str(fb_count)
+        row.cells[4].text = str(x_count)
+        row.cells[5].text = topics_str
+        if idx % 2 == 1:
+            for cell in row.cells:
+                set_shading(cell, 'E7F0FA')
+        for cell in row.cells:
+            for para in cell.paragraphs:
+                para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                for run in para.runs:
+                    set_font(run, size=9.5)
+    
+    # Total row
+    total_row = table.rows[len(all_data)+1]
+    total_row.cells[0].text = "合计"
+    total_posts = sum(len(d.get("posts", [])) for d in all_data.values())
+    total_row.cells[1].text = str(total_posts)
+    for cell in total_row.cells:
+        set_shading(cell, 'D6E4F0')
+        for para in cell.paragraphs:
+            for run in para.runs:
+                run.bold = True
+                set_font(run, size=9.5)
+    
+    doc.add_page_break()
+    
+    # === Detailed summaries per game ===
+    add_heading_styled(doc, '二、各社区主贴详细总结', level=1)
+    
+    subreddit_map = {
+        "Palworld": "r/Palworld", "CS2": "r/GlobalOffensive",
+        "Valorant": "r/Valorant", "LOL": "r/leagueoflegends",
+        "DeltaForce": "r/DeltaForce", "TFT": "r/TeamfightTactics",
+    }
+    
+    platform_colors = {"hot": "FF6B35", "new": "FF6B35", "facebook": "1877F2", "x": "000000"}
+    platform_names = {"hot": "Reddit-Hot", "new": "Reddit-New", "facebook": "Facebook", "x": "X/Twitter"}
+    
+    for game_idx, (game, data) in enumerate(all_data.items()):
+        posts = data.get("posts", [])
+        add_heading_styled(doc, f'2.{game_idx+1} {game} ({subreddit_map.get(game, game)}) - {len(posts)}帖', level=2)
+        
+        for post_idx, post in enumerate(posts):
+            # Post title with index
+            platform = post.get("sort_type", "hot")
+            platform_color = platform_colors.get(platform, "808080")
+            platform_name = platform_names.get(platform, platform)
+            
+            p = doc.add_paragraph()
+            run = p.add_run(f' [{platform_name}] ')
+            set_font(run, size=9, color='FFFFFF', bold=True)
+            pPr = p._element.get_or_add_pPr()
+            shading = OxmlElement('w:shd')
+            shading.set(qn('w:fill'), platform_color)
+            pPr.append(shading)
+            run = p.add_run(f' #{post_idx+1} {post.get("title", "")[:80]}')
+            set_font(run, size=11, bold=True)
+            p.paragraph_format.space_before = Pt(12)
+            
+            # Classification tag
+            cls = post.get("classification", "")
+            if cls and cls != "其他":
+                p = doc.add_paragraph()
+                run = p.add_run(f'  分类: {cls}')
+                set_font(run, size=9, color='E74C3C' if "A" in cls else 'F39C12', bold=True)
+            
+            # Detailed summary
+            content_summary = summarize_post_content(post, game)
+            for line in content_summary.split('\n'):
+                p = doc.add_paragraph()
+                run = p.add_run(line)
+                set_font(run, size=9.5)
+                p.paragraph_format.space_after = Pt(2)
+                p.paragraph_format.left_indent = Cm(0.5)
+                
+                # Color code section headers
+                if line.startswith('【帖子类型】'):
+                    set_font(run, size=10, color='2E86C1', bold=True)
+                elif line.startswith('【讨论主题】'):
+                    set_font(run, size=10, color='27AE60', bold=True)
+                elif line.startswith('  · '):
+                    set_font(run, size=9, color='7F8C8D')
+                elif line.startswith('【评论区延伸】'):
+                    set_font(run, size=9.5, color='8E44AD', bold=True)
+                elif line.startswith('【热评') or line.startswith('【次评'):
+                    set_font(run, size=9, color='34495E')
+            
+            # Post link
+            p = doc.add_paragraph()
+            run = p.add_run(f'  链接: {post.get("url", "")}')
+            set_font(run, size=8, color='3498DB')
+            p.paragraph_format.left_indent = Cm(0.5)
+            p.paragraph_format.space_after = Pt(8)
+        
+        doc.add_page_break()
+    
+    # === Topic statistics ===
+    add_heading_styled(doc, '三、话题统计', level=1)
+    
+    all_topic_counts = {}
+    for game, data in all_data.items():
+        posts = data.get("posts", [])
+        game_topics = []
+        for p in posts:
+            summary = summarize_post_content(p, game)
+            for line in summary.split('\n'):
+                if line.startswith('【讨论主题】'):
+                    topics = line.replace('【讨论主题】', '').strip()
+                    game_topics.extend(topics.split('、'))
+        
+        add_heading_styled(doc, f'{game}', level=2, color='2E75B6')
+        topic_counter = Counter(game_topics)
+        table = doc.add_table(rows=len(topic_counter)+1, cols=3)
+        table.style = 'Table Grid'
+        headers = ['话题', '帖子数', '占比']
+        for i, h in enumerate(headers):
+            cell = table.rows[0].cells[i]
+            cell.paragraphs[0].add_run(h).bold = True
+            set_shading(cell, '2E75B6')
+            set_font(cell.paragraphs[0].runs[0], size=9, color='FFFFFF', bold=True)
+        
+        total = sum(topic_counter.values()) or 1
+        for idx, (topic, count) in enumerate(topic_counter.most_common()):
+            row = table.rows[idx+1]
+            row.cells[0].text = topic
+            row.cells[1].text = str(count)
+            row.cells[2].text = f"{count/total*100:.0f}%"
+            if idx % 2 == 1:
+                for cell in row.cells:
+                    set_shading(cell, 'E7F0FA')
+            for cell in row.cells:
+                for para in cell.paragraphs:
+                    para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    for run in para.runs:
+                        set_font(run, size=9)
+        
+        doc.add_paragraph()
+    
+    doc.save(filepath)
+    print(f"Summary report saved: {filepath}")
+    return filepath
+
+
+def send_summary_email(filepath, period_label, now_bjt, all_data):
+    """Send the Word summary report via email (separate from raw data email)."""
+    smtp_server = os.environ.get("SMTP_SERVER", "smtp.qq.com")
+    smtp_port = int(os.environ.get("SMTP_PORT", "465"))
+    email_addr = os.environ.get("EMAIL_ADDR", "851372967@qq.com")
+    email_pass = os.environ.get("EMAIL_PASS", "")
+    to_addr = os.environ.get("TO_ADDR", "851372967@qq.com")
+
+    if not email_pass:
+        print("EMAIL_PASS not set, skipping summary email")
+        return False
+
+    msg = MIMEMultipart()
+    msg["From"] = email_addr
+    msg["To"] = to_addr
+    msg["Subject"] = f"主贴内容总结报告 {now_bjt.strftime('%Y-%m-%d %H:%M')} ({period_label})"
+
+    total_posts = sum(len(d.get("posts", [])) for d in all_data.values())
+    body_lines = [
+        f"游戏社区主贴内容总结报告",
+        f"时间: {now_bjt.strftime('%Y-%m-%d %H:%M')} BJT",
+        f"时间段: {period_label}",
+        f"总帖子数: {total_posts}",
+        "",
+        "本邮件附件为 Word 格式的主贴内容总结报告，",
+        "包含每条主贴的详细内容分析（帖子类型、讨论主题、评论区分析、热度等级）。",
+        "原始爬取数据请查看另一封邮件中的 Excel 附件。",
+        "",
+        "各社区帖子数:",
+    ]
+    for game, data in all_data.items():
+        posts = data.get("posts", [])
+        body_lines.append(f"  {game}: {len(posts)}帖")
+
+    body = "\n".join(body_lines)
+    msg.attach(MIMEText(body, "plain", "utf-8"))
+
+    with open(filepath, "rb") as f:
+        part = MIMEBase("application", "octet-stream")
+        part.set_payload(f.read())
+        encoders.encode_base64(part)
+        part.add_header("Content-Disposition", f'attachment; filename="{os.path.basename(filepath)}"')
+        msg.attach(part)
+
+    try:
+        print(f"Sending summary email to {to_addr}...")
+        server = smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=30)
+        server.login(email_addr, email_pass)
+        server.sendmail(email_addr, to_addr, msg.as_string())
+        server.close()
+        print("Summary email sent successfully!")
+        return True
+    except Exception as e:
+        print(f"Summary email failed: {e}", file=sys.stderr)
+        return False
+
+
 def main():
     print(f"=== Reddit Community Monitor ===")
     now_bjt = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8)))
@@ -1453,10 +1749,17 @@ def main():
         print(f"  Got {len(filtered_posts)} posts for {game}")
         time.sleep(2)
 
-    # Generate Excel
+    # Generate Excel (raw data)
     output_dir = os.environ.get("OUTPUT_DIR", ".")
     os.makedirs(output_dir, exist_ok=True)
     filepath = create_excel_report(all_data, output_dir, period_label)
+
+    # Generate Word summary report (separate document)
+    try:
+        summary_path = create_summary_word_report(all_data, output_dir, period_label)
+    except Exception as e:
+        print(f"Word summary failed: {e}")
+        summary_path = None
 
     # Also save raw JSON
     json_path = os.path.join(output_dir, f"reddit_raw_{now_bjt.strftime('%Y%m%d_%H%M')}.json")
@@ -1464,8 +1767,12 @@ def main():
         json.dump(all_data, f, ensure_ascii=False, indent=2)
     print(f"Raw data saved: {json_path}")
 
-    # Send email
+    # Send email with Excel (raw data)
     send_email(filepath, period_label, now_bjt, all_data)
+
+    # Send email with Word summary (separate)
+    if summary_path:
+        send_summary_email(summary_path, period_label, now_bjt, all_data)
 
     print("\n=== Done ===")
 
