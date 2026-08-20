@@ -52,65 +52,9 @@ jobs:
         env:
           OUTPUT_FILE: reports/fb_x_results.json
 
-      - name: Merge FB/X data into report
-
-      - name: Upload reports via GitHub API
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          python -c "
-          import os, json, base64, urllib.request
-
-          token = os.environ['GH_TOKEN']
-          repo = os.environ['GITHUB_REPOSITORY']
-          api = f'https://api.github.com/repos/{repo}'
-
-          def get_sha(path):
-              try:
-                  req = urllib.request.Request(f'{api}/contents/{path}', headers={'Authorization': f'token {token}', 'Accept': 'application/vnd.github+json'})
-                  with urllib.request.urlopen(req) as r:
-                      return json.loads(r.read()).get('sha')
-              except: return None
-
-          def get_head():
-              req = urllib.request.Request(f'{api}/git/refs/heads/main', headers={'Authorization': f'token {token}', 'Accept': 'application/vnd.github+json'})
-              with urllib.request.urlopen(req) as r:
-                  return json.loads(r.read())['object']['sha']
-
-          def upload(path, content, msg):
-              head = get_head()
-              # Create blob
-              blob_data = json.dumps({'content': content, 'encoding': 'utf-8'}).encode()
-              req = urllib.request.Request(f'{api}/git/blobs', data=blob_data, method='POST', headers={'Authorization': f'token {token}', 'Accept': 'application/vnd.github+json'})
-              with urllib.request.urlopen(req) as r:
-                  blob_sha = json.loads(r.read())['sha']
-              # Get tree
-              req = urllib.request.Request(f'{api}/git/commits/{head}', headers={'Authorization': f'token {token}', 'Accept': 'application/vnd.github+json'})
-              with urllib.request.urlopen(req) as r:
-                  tree_sha = json.loads(r.read())['tree']['sha']
-              # Create tree
-              tree_data = json.dumps({'base_tree': tree_sha, 'tree': [{'path': path, 'mode': '100644', 'type': 'blob', 'sha': blob_sha}]}).encode()
-              req = urllib.request.Request(f'{api}/git/trees', data=tree_data, method='POST', headers={'Authorization': f'token {token}', 'Accept': 'application/vnd.github+json'})
-              with urllib.request.urlopen(req) as r:
-                  new_tree = json.loads(r.read())['sha']
-              # Create commit
-              commit_data = json.dumps({'message': msg, 'tree': new_tree, 'parents': [head]}).encode()
-              req = urllib.request.Request(f'{api}/git/commits', data=commit_data, method='POST', headers={'Authorization': f'token {token}', 'Accept': 'application/vnd.github+json'})
-              with urllib.request.urlopen(req) as r:
-                  new_commit = json.loads(r.read())['sha']
-              # Update ref
-              ref_data = json.dumps({'sha': new_commit}).encode()
-              req = urllib.request.Request(f'{api}/git/refs/heads/main', data=ref_data, method='PATCH', headers={'Authorization': f'token {token}', 'Accept': 'application/vnd.github+json'})
-              with urllib.request.urlopen(req) as r:
-                  pass
-
-          import glob
-          for f in glob.glob('reports/*.xlsx') + glob.glob('reports/*.json'):
-              with open(f, 'r', encoding='utf-8') as fh:
-                  content = fh.read()
-              fname = os.path.basename(f)
-              print(f'Uploading {fname}...')
-              upload(f'reports/{fname}', content, f'Add {fname}')
-              print(f'  Done')
-          print('All reports uploaded!')
-          "
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: reddit-reports
+          path: reports/
+          retention-days: 30
