@@ -1021,61 +1021,125 @@ def get_hot_posts(subreddit_names, limit=POSTS_PER_SUB, game=None):
             
             # Fallback to RSS only if JSON API failed
             if not json_success:
-                print(f"  JSON API failed for r/{subreddit} ({sort}), falling back to RSS...")
-                posts = fetch_rss(subreddit, sort=sort, limit=limit)
-                if posts:
-                    # RSS doesn't have scores - try to scrape from web page
-                    print(f"    RSS got {len(posts)} posts, trying Playwright for scores...")
-                    try:
-                        from playwright.sync_api import sync_playwright
-                        with sync_playwright() as p:
-                            browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-gpu"])
-                            page = browser.new_context(
-                                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36"
-                            ).new_page()
-                            
-                            # Visit subreddit page and scrape scores
-                            web_url = f"https://www.reddit.com/r/{subreddit}/{sort}/"
-                            page.goto(web_url, timeout=15000, wait_until="domcontentloaded")
-                            time.sleep(3)
-                            
-                            # Parse post scores from the page
-                            article_els = page.query_selector_all('article, shreddit-post, [data-testid="post-container"]')
-                            for i, el in enumerate(article_els[:len(posts)]):
-                                try:
-                                    # Try to find score
-                                    score_el = el.query_selector('[data-score]') or el.query_selector('.score')
-                                    if score_el:
-                                        score_text = score_el.get_attribute('data-score') or score_el.inner_text()
-                                        score_match = re.search(r'(\d+)', score_text)
-                                        if score_match and i < len(posts):
-                                            posts[i]["score"] = int(score_match.group(1))
-                                    
-                                    # Try to find comment count
-                                    comment_el = el.query_selector('[data-num-comments]') or el.query_selector('a[href*="comments"]')
-                                    if comment_el:
-                                        comment_text = comment_el.get_attribute('data-num-comments') or comment_el.inner_text()
-                                        comment_match = re.search(r'(\d+)', comment_text)
-                                        if comment_match and i < len(posts):
-                                            posts[i]["num_comments"] = int(comment_match.group(1))
-                                except:
-                                    pass
-                            
-                            browser.close()
-                            enriched = sum(1 for p in posts if p["score"] > 0)
-                            print(f"    Playwright enriched {enriched}/{len(posts)} posts with scores")
-                    except ImportError:
-                        print(f"    Playwright not available, scores will be 0")
-                    except Exception as e:
-                        print(f"    Playwright error: {str(e)[:80]}")
-                    
-                    # Add sort tag and deduplicate
-                    for p in posts:
-                        p["sort_type"] = sort
-                        url = p.get("url", "")
-                        if url not in seen_urls:
-                            all_posts.append(p)
-                            seen_urls.add(url)
+                print(f"  JSON API failed for r/{subreddit} ({sort}), using old.reddit.com + Playwright...")
+                # Use old.reddit.com - server-side rendered, stable DOM, has scores
+                try:
+                    from playwright.sync_api import sync_playwright
+                    from bs4 import BeautifulSoup
+                    with sync_playwright() as p:
+                        browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-gpu"])
+                        page = browser.new_context(
+                            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36"
+                        ).new_page()
+                        
+                        web_url = f"https://old.reddit.com/r/{subreddit}/{sort}/"
+                        print(f"    Visiting: {web_url}")
+                        page.goto(web_url, timeout=20000, wait_until="domcontentloaded")
+                        time.sleep(3)
+                        
+                        html = page.content()
+                        soup = BeautifulSoup(html, "html.parser")
+                        
+                        # old.reddit.com uses <div class="thing"> for each post
+                        things = soup.find_all("div", class_="thing", limit=limit)
+                        print(f"    Found {len(things)} posts on old.reddit.com")
+                        
+                        for thing in things:
+                            try:
+                                # Title
+                                title_el = thing.find("a", class_="title")
+                                title = title_el.text.strip() if title_el else ""
+                                
+                                # URL
+                                link_el = thing.find("a", class_="title")
+                                post_url = f"https://www.reddit.com{link_el.get('href', '')}" if link_el else ""
+                                
+                                if not title or not post_url or post_url in seen_urls:
+                                    continue
+                                
+                                # Score - old.reddit uses <div class="score unvoted">1234</div>
+                                score_el = thing.find("div", class_="score") or thing.find("div", class_="score unvoted")
+                                score = 0
+                                if score_el:
+                                    score_text = score_el.text.strip()
+                                    score_match = re.search(r'([\d,.]+[KMB]?)', score_text)
+                                    if score_match:
+                                        s = score_match.group(1).upper()
+                                        if 'K' in s: score = int(float(s[:-1]) * 1000)
+                                        elif 'M' in s: score = int(float(s[:-1]) * 1000000)
+                                        else: score = int(s.replace(',', ''))
+                                
+                                # Comments - old.reddit uses <a class="comments">123 comments</a>
+                                comments_el = thing.find("a", class_="comments")
+                                num_comments = 0
+                                if comments_el:
+                                    comment_text = comments_el.text.strip()
+                                    comment_match = re.search(r'(\d+)', comment_text.replace(',', ''))
+                                    if comment_match:
+                                        num_comments = int(comment_match.group(1))
+                                
+                                # Author
+                                author_el = thing.find("a", class_="author")
+                                author = author_el.text.strip() if author_el else ""
+                                
+                                # Time
+                                time_el = thing.find("time")
+                                created_utc = 0
+                                if time_el and time_el.get("datetime"):
+                                    try:
+                                        dt = datetime.datetime.fromisoformat(time_el["datetime"].replace("Z", "+00:00"))
+                                        created_utc = dt.timestamp()
+                                    except: pass
+                                
+                                # Flair
+                                flair_el = thing.find("span", class_="flair")
+                                flair = flair_el.text.strip() if flair_el else ""
+                                
+                                # Selftext (from comments link description)
+                                selftext = ""
+                                
+                                all_posts.append({
+                                    "title": title,
+                                    "author": author,
+                                    "score": score,
+                                    "num_comments": num_comments,
+                                    "url": post_url,
+                                    "created_utc": created_utc,
+                                    "selftext": selftext,
+                                    "link_flair_text": flair,
+                                    "upvote_ratio": 0,
+                                    "subreddit": subreddit,
+                                    "sort_type": sort,
+                                })
+                                seen_urls.add(post_url)
+                            except Exception as e:
+                                continue
+                        
+                        browser.close()
+                        
+                        with_score = sum(1 for p in all_posts if p.get("score", 0) > 0)
+                        print(f"    old.reddit.com: {len(all_posts)} posts, {with_score} with scores")
+                        
+                except ImportError:
+                    print(f"    Playwright/BS4 not available, falling back to RSS...")
+                    posts = fetch_rss(subreddit, sort=sort, limit=limit)
+                    if posts:
+                        for p in posts:
+                            p["sort_type"] = sort
+                            url = p.get("url", "")
+                            if url not in seen_urls:
+                                all_posts.append(p)
+                                seen_urls.add(url)
+                except Exception as e:
+                    print(f"    old.reddit.com error: {str(e)[:80]}")
+                    posts = fetch_rss(subreddit, sort=sort, limit=limit)
+                    if posts:
+                        for p in posts:
+                            p["sort_type"] = sort
+                            url = p.get("url", "")
+                            if url not in seen_urls:
+                                all_posts.append(p)
+                                seen_urls.add(url)
                 time.sleep(2)
 
         if all_posts:
