@@ -976,7 +976,7 @@ def fetch_rss(subreddit, sort="hot", limit=POSTS_PER_SUB):
 
 
 def get_hot_posts(subreddit_names, limit=POSTS_PER_SUB, game=None):
-    """Get hot + new posts from a subreddit using RSS first, then JSON API."""
+    """Get hot + new posts. Try JSON API FIRST (has scores), fallback to RSS."""
     if isinstance(subreddit_names, str):
         subreddit_names = [subreddit_names]
 
@@ -986,50 +986,14 @@ def get_hot_posts(subreddit_names, limit=POSTS_PER_SUB, game=None):
 
         # Fetch both "hot" and "new" sorting
         for sort in ["hot", "new"]:
-            # Try RSS first (less likely to be blocked)
-            posts = fetch_rss(subreddit, sort=sort, limit=limit)
-            if posts:
-                # Enrich with JSON API for scores/comments (best effort)
-                # Try multiple Reddit domains to avoid rate limiting
-                for json_host in ["https://www.reddit.com", "https://old.reddit.com", "https://api.reddit.com"]:
-                    print(f"  Enriching {sort} with JSON API ({json_host})...")
-                    json_url = f"{json_host}/r/{subreddit}/{sort}.json?limit={limit}"
-                    json_headers = {
-                        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-                        "Accept": "application/json",
-                    }
-                    json_data = fetch_json(json_url, retries=2, delay=3)
-                    if json_data and "data" in json_data and "children" in json_data["data"]:
-                        for i, child in enumerate(json_data["data"]["children"][:len(posts)]):
-                            d = child["data"]
-                            if i < len(posts):
-                                posts[i]["score"] = d.get("score", posts[i]["score"])
-                                posts[i]["num_comments"] = d.get("num_comments", posts[i]["num_comments"])
-                                posts[i]["upvote_ratio"] = d.get("upvote_ratio", 0)
-                                posts[i]["link_flair_text"] = d.get("link_flair_text", posts[i]["link_flair_text"])
-                                posts[i]["url"] = f"https://www.reddit.com{d.get('permalink', '')}"
-                        print(f"    Enriched {min(len(posts), len(json_data['data']['children']))} posts with scores/comments")
-                        time.sleep(1)
-                        break
-                    else:
-                        print(f"    JSON API failed on {json_host}, trying next...")
-                        time.sleep(2)
-
-                # Add sort tag and deduplicate
-                for p in posts:
-                    p["sort_type"] = sort
-                    url = p.get("url", "")
-                    if url not in seen_urls:
-                        all_posts.append(p)
-                        seen_urls.add(url)
-
-            else:
-                # Fallback: try JSON API directly
-                print(f"  RSS failed for r/{subreddit} ({sort}), trying JSON API...")
-                json_url = f"https://www.reddit.com/r/{subreddit}/{sort}.json?limit={limit}"
-                print(f"Fetching JSON: {json_url}")
-                json_data = fetch_json(json_url, retries=3, delay=5)
+            # STRATEGY: Try JSON API FIRST (it has scores/comments built-in)
+            json_success = False
+            for json_host in ["https://www.reddit.com", "https://old.reddit.com"]:
+                json_url = f"{json_host}/r/{subreddit}/{sort}.json?limit={limit}"
+                print(f"  Trying JSON API: {json_url[:70]}")
+                json_data = fetch_json(json_url, retries=2, delay=3)
                 if json_data and "data" in json_data and "children" in json_data["data"]:
+                    print(f"    JSON API SUCCESS! Got {len(json_data['data']['children'])} posts with scores")
                     for child in json_data["data"]["children"]:
                         d = child["data"]
                         post_url = f"https://www.reddit.com{d.get('permalink', '')}"
@@ -1041,13 +1005,77 @@ def get_hot_posts(subreddit_names, limit=POSTS_PER_SUB, game=None):
                                 "num_comments": d.get("num_comments", 0),
                                 "url": post_url,
                                 "created_utc": d.get("created_utc", 0),
-                                "selftext": d.get("selftext", "")[:500],
+                                "selftext": (d.get("selftext", "") or "")[:500],
                                 "link_flair_text": d.get("link_flair_text", ""),
                                 "upvote_ratio": d.get("upvote_ratio", 0),
                                 "subreddit": d.get("subreddit", subreddit),
                                 "sort_type": sort,
                             })
                             seen_urls.add(post_url)
+                    json_success = True
+                    time.sleep(1)
+                    break
+                else:
+                    print(f"    JSON API failed on {json_host}")
+                    time.sleep(2)
+            
+            # Fallback to RSS only if JSON API failed
+            if not json_success:
+                print(f"  JSON API failed for r/{subreddit} ({sort}), falling back to RSS...")
+                posts = fetch_rss(subreddit, sort=sort, limit=limit)
+                if posts:
+                    # RSS doesn't have scores - try to scrape from web page
+                    print(f"    RSS got {len(posts)} posts, trying Playwright for scores...")
+                    try:
+                        from playwright.sync_api import sync_playwright
+                        with sync_playwright() as p:
+                            browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-gpu"])
+                            page = browser.new_context(
+                                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36"
+                            ).new_page()
+                            
+                            # Visit subreddit page and scrape scores
+                            web_url = f"https://www.reddit.com/r/{subreddit}/{sort}/"
+                            page.goto(web_url, timeout=15000, wait_until="domcontentloaded")
+                            time.sleep(3)
+                            
+                            # Parse post scores from the page
+                            article_els = page.query_selector_all('article, shreddit-post, [data-testid="post-container"]')
+                            for i, el in enumerate(article_els[:len(posts)]):
+                                try:
+                                    # Try to find score
+                                    score_el = el.query_selector('[data-score]') or el.query_selector('.score')
+                                    if score_el:
+                                        score_text = score_el.get_attribute('data-score') or score_el.inner_text()
+                                        score_match = re.search(r'(\d+)', score_text)
+                                        if score_match and i < len(posts):
+                                            posts[i]["score"] = int(score_match.group(1))
+                                    
+                                    # Try to find comment count
+                                    comment_el = el.query_selector('[data-num-comments]') or el.query_selector('a[href*="comments"]')
+                                    if comment_el:
+                                        comment_text = comment_el.get_attribute('data-num-comments') or comment_el.inner_text()
+                                        comment_match = re.search(r'(\d+)', comment_text)
+                                        if comment_match and i < len(posts):
+                                            posts[i]["num_comments"] = int(comment_match.group(1))
+                                except:
+                                    pass
+                            
+                            browser.close()
+                            enriched = sum(1 for p in posts if p["score"] > 0)
+                            print(f"    Playwright enriched {enriched}/{len(posts)} posts with scores")
+                    except ImportError:
+                        print(f"    Playwright not available, scores will be 0")
+                    except Exception as e:
+                        print(f"    Playwright error: {str(e)[:80]}")
+                    
+                    # Add sort tag and deduplicate
+                    for p in posts:
+                        p["sort_type"] = sort
+                        url = p.get("url", "")
+                        if url not in seen_urls:
+                            all_posts.append(p)
+                            seen_urls.add(url)
                 time.sleep(2)
 
         if all_posts:
