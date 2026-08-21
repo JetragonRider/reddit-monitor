@@ -10,5 +10,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - name: Install deps
+        run: |
+          pip install playwright
+          npx playwright install chromium --with-deps
       - name: Run debug
         run: python debug_reddit.py
