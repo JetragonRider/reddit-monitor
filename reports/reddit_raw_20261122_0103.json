@@ -1,0 +1,103 @@
+{
+  "Palworld": {
+    "subreddit": "Palworld",
+    "posts": [],
+    "summary": "No data available."
+  },
+  "CS2": {
+    "subreddit": "GlobalOffensive",
+    "posts": [],
+    "summary": "No data available."
+  },
+  "Valorant": {
+    "subreddit": "Valorant",
+    "posts": [],
+    "summary": "No data available."
+  },
+  "LOL": {
+    "subreddit": "leagueoflegends",
+    "posts": [
+      {
+        "title": "This page isn't available right now",
+        "url": "https://www.facebook.com/leagueoflegends",
+        "author": "Facebook User",
+        "score": 0,
+        "num_comments": 0,
+        "upvote_ratio": 0,
+        "selftext": "This page isn't available right now",
+        "link_flair_text": "Facebook",
+        "subreddit": "facebook",
+        "sort_type": "facebook",
+        "created_utc": 0,
+        "classification": "其他",
+        "classification_notes": "无特殊标记",
+        "is_tool_opportunity": false,
+        "is_pain_point": false
+      },
+      {
+        "title": "See more from League of Legends",
+        "url": "https://www.facebook.com/leagueoflegends",
+        "author": "Facebook User",
+        "score": 0,
+        "num_comments": 0,
+        "upvote_ratio": 0,
+        "selftext": "See more from League of Legends",
+        "link_flair_text": "Facebook",
+        "subreddit": "facebook",
+        "sort_type": "facebook",
+        "created_utc": 0,
+        "classification": "其他",
+        "classification_notes": "无特殊标记",
+        "is_tool_opportunity": false,
+        "is_pain_point": false
+      }
+    ],
+    "summary": "[Facebook] (2 posts)\n  - This page isn't available right now\n  - See more from League of Legends\n"
+  },
+  "DeltaForce": {
+    "subreddit": "DeltaForce",
+    "posts": [
+      {
+        "title": "HAAVK or AHSARAH? Two factions, two ways to play.… See more",
+        "url": "https://www.facebook.com/DeltaForceGame",
+        "author": "Facebook User",
+        "score": 0,
+        "num_comments": 0,
+        "upvote_ratio": 0,
+        "selftext": "HAAVK or AHSARAH? Two factions, two ways to play.… See more",
+        "link_flair_text": "Facebook",
+        "subreddit": "facebook",
+        "sort_type": "facebook",
+        "created_utc": 0,
+        "classification": "其他",
+        "classification_notes": "无特殊标记",
+        "is_tool_opportunity": false,
+        "is_pain_point": false
+      }
+    ],
+    "summary": "[Facebook] (1 posts)\n  - HAAVK or AHSARAH? Two factions, two ways to play.… See more\n"
+  },
+  "TFT": {
+    "subreddit": "TeamfightTactics",
+    "posts": [
+      {
+        "title": "See more from Ghiền DTCL Pc",
+        "url": "https://www.facebook.com/TeamfightTactics",
+        "author": "Facebook User",
+        "score": 0,
+        "num_comments": 0,
+        "upvote_ratio": 0,
+        "selftext": "See more from Ghiền DTCL Pc",
+        "link_flair_text": "Facebook",
+        "subreddit": "facebook",
+        "sort_type": "facebook",
+        "created_utc": 0,
+        "classification": "其他",
+        "classification_notes": "无特殊标记",
+        "is_tool_opportunity": false,
+        "is_pain_point": false
+      }
+    ],
+    "summary": "[Facebook] (1 posts)\n  - See more from Ghiền DTCL Pc\n"
+  }
+}
